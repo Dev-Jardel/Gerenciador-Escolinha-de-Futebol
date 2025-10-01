@@ -90,5 +90,5 @@ Para rodar este projeto na sua máquina, siga os passos abaixo:
 
 Este projeto foi desenvolvido com ❤️ por Jardel Feitosa.
 
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-Jardel%20Feitosa-0077B5?style=for-the-badge&logo=linkedin)](URL_DO_SEU_LINKEDIN_AQUI)
-[![GitHub](https://img.shields.io/badge/GitHub-Dev--Jardel-181717?style=for-the-badge&logo=github)](https://github.com/Dev-Jardel
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Jardel%20Feitosa-0077B5?style=for-the-badge&logo=linkedin)](www.linkedin.com/in/jardel-feitosa96)
+[![GitHub](https://img.shields.io/badge/GitHub-Dev--Jardel-181717?style=for-the-badge&logo=github)](https://github.com/Dev-Jardel)
