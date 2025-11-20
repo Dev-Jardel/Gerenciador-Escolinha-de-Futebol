@@ -6,10 +6,9 @@ import { PERMISSIONS, ROLES } from './permissions.js';
 import AtualizacaoEmMassa from './components/AtualizacaoEmMassa.jsx';
 import StudentsChart from './components/StudentsChart.jsx';
 
-
 // Importações do Firebase
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, writeBatch, getDocs, setDoc } from 'firebase/firestore';
+import { getFirestore, collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, writeBatch, getDocs, setDoc, getDoc, query, where } from 'firebase/firestore';
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, setPersistence, browserSessionPersistence } from "firebase/auth";
 import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 
@@ -36,7 +35,7 @@ const firebaseConfig = {
 
 // ADICIONE A SUA CHAVE PIX AQUI
 const SUA_CHAVE_PIX = "ADICIONAR CHAVE PIX"; 
-const NOME_DA_ESCOLA =  " Administração";
+// const NOME_DA_ESCOLA =  " Administração";
 
 // Inicializa o Firebase e o Firestore
 const app = initializeApp(firebaseConfig);
@@ -1500,60 +1499,166 @@ const LoginScreen = ({ setAuthScreen }) => {
 };
 
 const RegisterScreen = ({ setAuthScreen }) => {
+    // Estados gerais
+    const [activeTab, setActiveTab] = useState('nova_escola'); // 'nova_escola' ou 'entrar_equipe'
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [name, setName] = useState('');
-    const [role, setRole] = useState('professor');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
     const [success, setSuccess] = useState(false);
+
+    // Estados específicos
+    const [schoolName, setSchoolName] = useState(''); // Para quem cria
+    const [schoolIdToJoin, setSchoolIdToJoin] = useState(''); // Para quem entra
+    const [role, setRole] = useState('professor'); // Cargo do funcionário
 
     const handleRegister = async (e) => {
         e.preventDefault();
         setLoading(true);
         setError('');
+
         try {
+            let userRole = 'admin';
+            let userStatus = 'approved';
+            let finalSchoolId = '';
+
+            // VALIDAÇÕES PRÉVIAS
+            if (activeTab === 'nova_escola') {
+                if (!schoolName.trim()) throw new Error("Digite o nome da escola.");
+            } else {
+                if (!schoolIdToJoin.trim()) throw new Error("Digite o ID da escola que deseja entrar.");
+                // Aqui poderíamos verificar se a escola existe no banco antes de criar o user
+                const escolaRef = doc(db, "escolas", schoolIdToJoin.trim());
+                const escolaSnap = await getDoc(escolaRef); // Note: precisa importar getDoc no topo
+                if (!escolaSnap.exists()) {
+                    throw new Error("Escola não encontrada. Verifique o ID.");
+                }
+                
+                userRole = role; // O cargo escolhido (professor, etc)
+                userStatus = 'pending'; // Entra como pendente para o Admin aprovar
+                finalSchoolId = schoolIdToJoin.trim();
+            }
+
+            // 1. Cria o usuário na autenticação
             const userCredential = await createUserWithEmailAndPassword(auth, email, password);
             const user = userCredential.user;
+
+            if (activeTab === 'nova_escola') {
+    const cleanName = schoolName.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    finalSchoolId = `escola_${cleanName}_${Date.now()}`;
+
+    await setDoc(doc(db, "escolas", finalSchoolId), {
+        nome: schoolName,
+        criadoEm: new Date().toISOString(),
+        donoId: user.uid,
+        ativo: true,
+        // CORREÇÃO: Inicializa o logo como vazio (a escola fará o upload depois)
+        logoUrl: '', // Ou use o URL de um escudo genérico como placeholder
+    });
+}
+
+            // 3. Cria o documento do USUÁRIO
             await setDoc(doc(db, "users", user.uid), {
-                uid: user.uid, name: name, email: email, role: role, status: 'pending'
+                uid: user.uid,
+                name: name,
+                email: email,
+                role: userRole,   // Admin (se criou) ou o cargo escolhido (se entrou)
+                status: userStatus, // Aprovado (se criou) ou Pendente (se entrou)
+                escolaId: finalSchoolId
             });
+
             setSuccess(true);
+
         } catch (err) {
-            // LÓGICA DE ERRO APRIMORADA AQUI
-            if (err.code === 'auth/weak-password') {
-                setError('A senha deve ter no mínimo 6 caracteres.');
-            } else if (err.code === 'auth/email-already-in-use') {
-                setError('Este e-mail já está em uso.');
-            } else { 
-                setError('Ocorreu um erro ao criar a conta.'); 
-            }
-            console.error("Erro de registro:", err);
+            if (err.code === 'auth/weak-password') setError('A senha deve ter no mínimo 6 caracteres.');
+            else if (err.code === 'auth/email-already-in-use') setError('Este e-mail já está em uso.');
+            else setError(err.message);
         }
         setLoading(false);
     };
 
-    if (success) { 
-        return ( <div className="flex items-center justify-center min-h-screen bg-gray-100"> <div className="w-full max-w-md p-8 space-y-4 bg-white rounded-lg shadow-md text-center"> <Check size={48} className="mx-auto text-green-500" /> <h2 className="text-2xl font-bold text-gray-900">Cadastro Enviado!</h2> <p className="text-gray-600"> Sua solicitação de perfil foi enviada ao Administrador. Seu acesso será liberado após a aprovação. </p> <button onClick={() => setAuthScreen('login')} className="w-full mt-4 flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700" > Voltar para o Login </button> </div> </div> ) }
+
+    if (success) {
+        return (
+            <div className="flex items-center justify-center min-h-screen bg-gray-100">
+                <div className="w-full max-w-md p-8 space-y-4 bg-white rounded-lg shadow-md text-center">
+                    {activeTab === 'nova_escola' ? (
+                        <>
+                            <Check size={48} className="mx-auto text-green-500" />
+                            <h2 className="text-2xl font-bold text-gray-900">Escola Criada!</h2>
+                            <p className="text-gray-600">Sua escola <strong>{schoolName}</strong> está pronta.</p>
+                        </>
+                    ) : (
+                        <>
+                            <Clock size={48} className="mx-auto text-yellow-500" />
+                            <h2 className="text-2xl font-bold text-gray-900">Solicitação Enviada!</h2>
+                            <p className="text-gray-600">Seu cadastro foi enviado para o administrador da escola. Aguarde a aprovação.</p>
+                        </>
+                    )}
+                    <button onClick={() => setAuthScreen('login')} className="w-full mt-4 py-2 px-4 bg-blue-600 text-white rounded-md hover:bg-blue-700">Ir para Login</button>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="flex items-center justify-center min-h-screen bg-gray-100">
             <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-lg shadow-md">
                 <h2 className="text-2xl font-bold text-center text-gray-900">Criar Conta</h2>
+                
+                {/* ABAS DE SELEÇÃO */}
+                <div className="flex border-b border-gray-200 mb-4">
+                    <button 
+                        type="button"
+                        className={`flex-1 py-2 text-center font-medium ${activeTab === 'nova_escola' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                        onClick={() => setActiveTab('nova_escola')}
+                    >
+                        Sou Dono
+                    </button>
+                    <button 
+                        type="button"
+                        className={`flex-1 py-2 text-center font-medium ${activeTab === 'entrar_equipe' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                        onClick={() => setActiveTab('entrar_equipe')}
+                    >
+                        Sou Funcionário
+                    </button>
+                </div>
+
                 <form className="space-y-4" onSubmit={handleRegister}>
-                    <div> <label htmlFor="name">Nome Completo</label> <input id="name" type="text" required value={name} onChange={(e) => setName(e.target.value)} className="w-full px-3 py-2 mt-1 border rounded-md" /> </div>
-                    <div> <label htmlFor="email-register">E-mail</label> <input id="email-register" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-3 py-2 mt-1 border rounded-md" /> </div>
-                    <div> <label htmlFor="password-register">Senha</label> <input id="password-register" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-3 py-2 mt-1 border rounded-md" /> </div>
-                    <div>
-                        <label htmlFor="role">Cargo</label>
-                        <select id="role" value={role} onChange={(e) => setRole(e.target.value)} className="w-full px-3 py-2 mt-1 border rounded-md">
-                            {ROLES.filter(r => r !== 'admin').map(r => <option key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>)}
-                        </select>
-                    </div>
-                    {error && <p className="text-sm text-red-600 text-center">{error}</p>}
-                    <div className="flex items-center gap-4">
-                        <button type="button" onClick={() => setAuthScreen('login')} className="w-full flex justify-center py-2 px-4 border rounded-md shadow-sm text-sm font-medium bg-gray-200 hover:bg-gray-300"> Cancelar </button>
-                        <button type="submit" disabled={loading} className="w-full flex justify-center py-2 px-4 border rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300"> {loading ? <Loader className="animate-spin" /> : 'Criar Conta'} </button>
+                    <div> <label className="text-sm font-medium text-gray-700">Nome Completo</label> <input type="text" required value={name} onChange={(e) => setName(e.target.value)} className="w-full px-3 py-2 mt-1 border rounded-md" /> </div>
+                    
+                    {/* CAMPOS ESPECÍFICOS POR ABA */}
+                    {activeTab === 'nova_escola' ? (
+                        <div className="bg-blue-50 p-3 rounded-md border border-blue-200"> 
+                            <label className="text-sm font-medium text-blue-900">Nome da Nova Escola</label> 
+                            <input type="text" placeholder="Ex: Escolinha Craques" required value={schoolName} onChange={(e) => setSchoolName(e.target.value)} className="w-full px-3 py-2 mt-1 border rounded-md border-blue-300" /> 
+                            <p className="text-xs text-blue-600 mt-1">Você será o Administrador.</p>
+                        </div>
+                    ) : (
+                        <div className="bg-gray-50 p-3 rounded-md border border-gray-200 space-y-3">
+                            <div>
+                                <label className="text-sm font-medium text-gray-700">Código da Escola (Peça ao Admin)</label> 
+                                <input type="text" placeholder="Cole o ID aqui (ex: escola_xyz_123)" required value={schoolIdToJoin} onChange={(e) => setSchoolIdToJoin(e.target.value)} className="w-full px-3 py-2 mt-1 border rounded-md" /> 
+                            </div>
+                            <div>
+                                <label className="text-sm font-medium text-gray-700">Seu Cargo</label>
+                                <select value={role} onChange={(e) => setRole(e.target.value)} className="w-full px-3 py-2 mt-1 border rounded-md bg-white">
+                                    {ROLES.filter(r => r !== 'admin').map(r => <option key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>)}
+                                </select>
+                            </div>
+                            <p className="text-xs text-orange-600">Seu acesso ficará pendente de aprovação.</p>
+                        </div>
+                    )}
+
+                    <div> <label className="text-sm font-medium text-gray-700">E-mail</label> <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-3 py-2 mt-1 border rounded-md" /> </div>
+                    <div> <label className="text-sm font-medium text-gray-700">Senha</label> <input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-3 py-2 mt-1 border rounded-md" /> </div>
+                    
+                    {error && <p className="text-sm text-red-600 text-center bg-red-50 p-2 rounded">{error}</p>}
+                    
+                    <div className="flex items-center gap-4 pt-2">
+                        <button type="button" onClick={() => setAuthScreen('login')} className="w-full py-2 px-4 border rounded-md text-sm font-medium bg-gray-100 hover:bg-gray-200"> Cancelar </button>
+                        <button type="submit" disabled={loading} className="w-full py-2 px-4 border rounded-md text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300"> {loading ? <Loader className="animate-spin mx-auto" /> : (activeTab === 'nova_escola' ? 'Criar Escola' : 'Solicitar Acesso')} </button>
                     </div>
                 </form>
             </div>
@@ -1568,13 +1673,17 @@ const PendingScreen = ({ handleLogout }) => {
                 <Clock size={48} className="mx-auto text-yellow-500" />
                 <h2 className="text-2xl font-bold text-gray-900">Aguardando Aprovação</h2>
                 <p className="text-gray-600">
-                    Sua conta foi criada, mas ainda precisa ser aprovada por um administrador. Por favor, aguarde.
+                    Sua solicitação de acesso foi enviada com sucesso.
+                    <br />
+                    <br />
+                    Por favor, aguarde até que o administrador da escola aprove o seu cadastro.
                 </p>
                 <button
                     onClick={handleLogout}
-                    className="w-full mt-4 flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700"
+                    className="w-full mt-4 flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors"
                 >
-                    Sair
+                    <LogOut size={18} className="mr-2" />
+                    Sair e voltar mais tarde
                 </button>
             </div>
         </div>
@@ -1633,18 +1742,30 @@ const GestaoUsuarios = ({ allUsers, onUpdateUserStatus, onUpdateUserRole, confir
     );
 };
 
-
 // --- BARRA DE NAVEGAÇÃO ---
 
-const Sidebar = ({ activeView, setActiveView, resetSelection, onOpenSettings, userPermissions }) => {
+// App.jsx (Componente Sidebar)
+
+const Sidebar = ({ activeView, setActiveView, resetSelection, onOpenSettings, userPermissions, schoolName, escolaId, userRole  }) => { // <-- Recebe a prop escolaId
     
+    // DEFINIÇÃO DA URL BASE DO SEU OUTRO APP
+    const URL_APP_ALUGUEL_BASE = "https://app-agendamento-society.vercel.app/"; // Base URL do Agendamento Society
+
     const allNavItems = [
         { id: 'visaoGeral', label: 'Visão Geral', icon: BarChart2 },
         { id: 'alunos', label: 'Alunos', icon: User },
         { id: 'turmas', label: 'Turmas', icon: Users },
         { id: 'financeiro', label: 'Financeiro', icon: DollarSign },
         { id: 'eventos', label: 'Eventos', icon: CalendarDays },
-        { id: 'aluguelQuadra', label: 'Aluguel de Quadra', icon: ClipboardCheck, href: 'https://app-agendamento-society.vercel.app/#gestor' },
+        // LÓGICA CORRIGIDA: Cria a URL dinamicamente
+        { 
+            id: 'aluguelQuadra', 
+            label: 'Aluguel de Quadra', 
+            icon: ClipboardCheck, 
+            href: escolaId 
+               ? `${URL_APP_ALUGUEL_BASE}?escolaId=${escolaId}&role=${userRole}#gestor`
+            : `${URL_APP_ALUGUEL_BASE}#gestor`
+    },
         { id: 'metas', label: 'Metas', icon: Target },
         { id: 'comunicacao', label: 'Comunicação', icon: Bell },
     ];
@@ -1664,7 +1785,7 @@ const Sidebar = ({ activeView, setActiveView, resetSelection, onOpenSettings, us
                             className="w-full h-full object-cover"
                         />
                     </div>
-                    <h1 className="hidden lg:block text-xl font-bold text-gray-800">{NOME_DA_ESCOLA}</h1>
+                    <h1 className="hidden lg:block text-xl font-bold text-gray-800">{schoolName}</h1>
                 </div>
 
                 <ul>
@@ -3423,6 +3544,7 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [authScreen, setAuthScreen] = useState('login'); // 'login' ou 'register'
   const [firestoreUser, setFirestoreUser] = useState(null);
+  const [schoolName, setSchoolName] = useState('');
   const [firestoreLoading, setFirestoreLoading] = useState(true);
   const [allUsers, setAllUsers] = useState([]);
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
@@ -3507,101 +3629,122 @@ export default function App() {
 
 
   // --- useEffect para ouvir dados em tempo real do Firebase ---
-  // Listener de Dados do Firebase e Seeding Inicial
     useEffect(() => {
-        const seedDatabase = async () => {
-        
-        };
-
-        seedDatabase().then(() => {
-            // Listener para Alunos
-            const unsubAlunos = onSnapshot(collection(db, 'alunos'), (snapshot) => {
-                const alunosData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                setAlunos(alunosData);
-                setIsLoading(false);
-            });
-
-            // Listener para Turmas
-            const unsubTurmas = onSnapshot(collection(db, 'turmas'), (snapshot) => {
-                const turmasData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                setTurmas(turmasData);
-            });
-
-            // Listener para Transações (Receitas/Despesas)
-            const unsubTransacoes = onSnapshot(collection(db, 'transacoes'), (snapshot) => {
-                const transacoesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                setTransacoes(transacoesData);
-            });
-
-            const unsubConfigs = onSnapshot(doc(db, 'configuracoes', 'financeiro'), (doc) => {
-            if (doc.exists()) {
-                setConfiguracoes(doc.data());
+        // 1. Verificação de Segurança (Evita o erro "reading email of null")
+        if (!firestoreUser || !firestoreUser.escolaId) {
+            setAlunos([]);
+            setTurmas([]);
+            setTransacoes(null);
+            setMetas([]);
+            setEventos([]);
+            setCategorias([]);
+            if (!authLoading) {
+              setIsLoading(false);
             }
-            });
+            return; // Para tudo se não tiver usuário
+        }
 
-            // Listener para Metas
-            const unsubMetas = onSnapshot(collection(db, 'metas'), (snapshot) => {
-                const metasData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                setMetas(metasData);
-            });
+        // === ÁREA DE DEBUG (Aqui é seguro colocar) ===
+        console.log("=== DEBUG DO SISTEMA SAAS ===");
+        console.log("1. Usuário Logado:", firestoreUser?.email); // O '?' evita o erro
+        console.log("2. ID da Escola:", firestoreUser.escolaId);
+        console.log("3. Caminho esperado:", `escolas/${firestoreUser.escolaId}/alunos`);
+        // =============================================
 
-            // Listener para Eventos
-            const unsubEventos = onSnapshot(collection(db, 'eventos'), (snapshot) => {
-                const eventosData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                setEventos(eventosData);
-            });
+        // 2. Configura o caminho da escola
+        const escolaRef = doc(db, 'escolas', firestoreUser.escolaId);
 
-            // Listener para Categorias de Eventos
-            const unsubCategorias = onSnapshot(collection(db, 'categorias'), (snapshot) => {
-                const categoriasData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                setCategorias(categoriasData);
-            });
-            
-
-            // Função de limpeza para desligar todos os listeners
-            return () => {
-                unsubAlunos();
-                unsubTurmas();
-                unsubTransacoes();
-                unsubMetas();
-                unsubEventos();
-                unsubCategorias();
-            };
+        // 3. Listeners (Ouvem os dados)
+        const unsubAlunos = onSnapshot(collection(escolaRef, 'alunos'), (snapshot) => {
+            const alunosData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setAlunos(alunosData);
+            setIsLoading(false); // Destrava a tela de carregamento
+        }, (error) => {
+            console.error("ERRO AO LER ALUNOS:", error); // Mostra erro específico no console
         });
-    }, []); // Array de dependências vazio para rodar apenas uma vez
+
+        const unsubTurmas = onSnapshot(collection(escolaRef, 'turmas'), (snapshot) => {
+            const turmasData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setTurmas(turmasData);
+        });
+
+        const unsubTransacoes = onSnapshot(collection(escolaRef, 'transacoes'), (snapshot) => {
+            const transacoesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setTransacoes(transacoesData);
+        });
+
+        const unsubConfigs = onSnapshot(doc(escolaRef, 'configuracoes', 'financeiro'), (doc) => {
+            if (doc.exists()) setConfiguracoes(doc.data());
+        });
+
+        const unsubMetas = onSnapshot(collection(escolaRef, 'metas'), (snapshot) => {
+            const metasData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setMetas(metasData);
+        });
+
+        const unsubEventos = onSnapshot(collection(escolaRef, 'eventos'), (snapshot) => {
+            const eventosData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setEventos(eventosData);
+        });
+
+        const unsubCategorias = onSnapshot(collection(escolaRef, 'categorias'), (snapshot) => {
+            const categoriasData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setCategorias(categoriasData);
+        });
+        
+        return () => {
+            unsubAlunos(); unsubTurmas(); unsubTransacoes(); 
+            unsubConfigs(); unsubMetas(); unsubEventos(); unsubCategorias();
+        };
+        
+    }, [firestoreUser, authLoading]); // Executa sempre que o usuário muda
 
  // Listener de Autenticação e Perfil do Usuário
 
     useEffect(() => {
-        const unsubscribe = onAuthStateChanged(auth, (user) => {
-            setCurrentUser(user);
-            
-            if (user) {
-                setFirestoreLoading(true);
-                const userDocRef = doc(db, "users", user.uid);
-                const unsubDoc = onSnapshot(userDocRef, (doc) => {
-                    if (doc.exists()) {
-                        setFirestoreUser({ id: doc.id, ...doc.data() });
-                        setAuthLoading(false);
-                        setFirestoreLoading(false);
-                    } else {
-                        // CORREÇÃO DE SEGURANÇA: Se o documento do usuário não existe (foi rejeitado/deletado),
-                        // desloga-o imediatamente.
-                        setFirestoreUser(null);
-                        signOut(auth); 
-                        setAuthLoading(false);
-                        setFirestoreLoading(false);
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+        setCurrentUser(user);
+        
+        if (user) {
+            setFirestoreLoading(true);
+            const userDocRef = doc(db, "users", user.uid);
+            const unsubDoc = onSnapshot(userDocRef, async (documentoUsuario) => { // Note o async aqui
+                if (documentoUsuario.exists()) {
+                    const userData = { id: documentoUsuario.id, ...documentoUsuario.data() };
+                    setFirestoreUser(userData);
+                    
+                    // --- NOVO: BUSCAR NOME DA ESCOLA ---
+                    if (userData.escolaId) {
+                        // Busca o documento da escola para pegar o nome
+                        // Nota: Aqui usamos getDoc (uma vez) ou onSnapshot (tempo real)
+                        // Vamos usar onSnapshot para se mudar o nome, mudar na hora
+                        onSnapshot(doc(db, "escolas", userData.escolaId), (docEscola) => {
+                            if (docEscola.exists()) {
+                                setSchoolName(docEscola.data().nome || " Escola_Ousacs");
+                            }
+                        });
                     }
-                });
-                return () => unsubDoc();
-            } else {
-                setFirestoreUser(null);
-                setAuthLoading(false);
-                setFirestoreLoading(false);
-            }
-        });
-        return () => unsubscribe();
-    }, []);
+
+                    setAuthLoading(false);
+                    setFirestoreLoading(false);
+                } else {
+    console.log("Perfil ainda não encontrado... aguardando criação."); // Opcional: Log para debug
+    setFirestoreUser(null);
+    // signOut(auth); <--- COMENTE OU APAGUE ESTA LINHA
+    setAuthLoading(false);
+    setFirestoreLoading(false);
+}
+            });
+            return () => unsubDoc();
+        } else {
+            setFirestoreUser(null);
+            setAuthLoading(false);
+            setFirestoreLoading(false);
+        }
+    });
+        
+    return () => unsubscribe();
+}, []);
 
 // Efeito para verificar a versão e mostrar as notas da atualização
 useEffect(() => {
@@ -3611,21 +3754,32 @@ useEffect(() => {
     }
 }, []); // Roda apenas uma vez quando o app carrega
 
-// Listener para carregar dados específicos do Admin (como a lista de todos os usuários)
-useEffect(() => {
-    // Só executa se o usuário logado for um admin
-    if (firestoreUser?.role === 'admin') {
-        const unsubAllUsers = onSnapshot(collection(db, "users"), (snapshot) => {
-            const usersList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            setAllUsers(usersList);
-        });
-        // Retorna a função de limpeza para este listener específico
-        return () => unsubAllUsers();
+// --- Listener para Listar Usuários da MESMA ESCOLA (Para o Admin) ---
+  useEffect(() => {
+    // Só busca usuários se estiver logado e tiver uma escola
+    if (currentUser && firestoreUser?.escolaId) {
+      
+      // Filtra os usuários onde o "escolaId" é igual ao do admin logado
+      const q = query(
+        collection(db, "users"), 
+        where("escolaId", "==", firestoreUser.escolaId)
+      );
+
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const usersList = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        setAllUsers(usersList);
+      });
+
+      return () => unsubscribe();
+    } else {
+      setAllUsers([]); // Limpa a lista
     }
-}, [firestoreUser]); // Este efeito depende do firestoreUser
+  }, [currentUser, firestoreUser?.escolaId]);
 
 
-  
   // --- Data Manipulation Functions (now interact with Firebase) ---
 
   const triggerUndo = (undoAction) => {
@@ -3663,6 +3817,13 @@ useEffect(() => {
     };
 
   const handleAddOrUpdateAluno = async (alunoData, editingId) => {
+      // SEGURANÇA: Verifica se temos o ID da escola
+      if (!firestoreUser || !firestoreUser.escolaId) {
+          alert("Erro: Escola não identificada. Faça login novamente.");
+          return;
+      }
+      const escolaId = firestoreUser.escolaId; // Pega o ID do contexto
+
       const dataToSave = {
         nome: alunoData.nome,
         dataNascimento: alunoData.dataNascimento,
@@ -3674,12 +3835,14 @@ useEffect(() => {
       };
 
       if (editingId) {
-          const docRef = doc(db, 'alunos', editingId);
+          // ATUALIZAR: Caminho aponta para dentro da escola
+          const docRef = doc(db, 'escolas', escolaId, 'alunos', editingId);
           await updateDoc(docRef, {
             ...dataToSave,
-            turmaIds: alunoData.turmaId ? [alunoData.turmaId] : [], // Update turma if provided
+            turmaIds: alunoData.turmaId ? [alunoData.turmaId] : [], 
           });
       } else {
+          // CRIAR: Caminho aponta para dentro da escola
           const newAluno = {
               ...dataToSave,
               turmaIds: alunoData.turmaId ? [alunoData.turmaId] : [],
@@ -3687,10 +3850,11 @@ useEffect(() => {
               documentos: [], pagamentos: [], avaliacoes: [], dataAdicao: new Date().toISOString().split('T')[0],
               rg: '', cpf: '', eventosParticipados: 0,
           };
-          await addDoc(collection(db, 'alunos'), newAluno);
+          // Coleção agora é uma sub-coleção da escola
+          await addDoc(collection(db, 'escolas', escolaId, 'alunos'), newAluno);
       }
   };
-
+    
   const handleUpdateUserStatus = async (uid, status) => {
         const userDocRef = doc(db, "users", uid);
         if (status === 'rejected') {
@@ -3712,46 +3876,54 @@ useEffect(() => {
     };
 
   const handleDeleteAluno = async (alunoId) => {
-      await deleteDoc(doc(db, 'alunos', alunoId));
+      if (!firestoreUser?.escolaId) return;
+      // Deleta o documento dentro da sub-coleção da escola
+      await deleteDoc(doc(db, 'escolas', firestoreUser.escolaId, 'alunos', alunoId));
   };
 
   const handleDeleteAlunos = (alunoIds) => {
-        if (!alunoIds || alunoIds.length === 0) return;
+    if (!alunoIds || alunoIds.length === 0 || !firestoreUser?.escolaId) return; // Segurança extra
 
-        const executeDelete = async () => {
-            const batch = writeBatch(db);
-            alunoIds.forEach(id => {
-                const docRef = doc(db, 'alunos', id);
-                batch.delete(docRef);
-            });
-            await batch.commit();
-        };
-
-        const message = alunoIds.length === 1 
-            ? "Tem a certeza de que quer excluir este aluno?" 
-            : `Tem a certeza de que quer excluir os ${alunoIds.length} alunos selecionados?`;
-
-        confirmAction(message, executeDelete);
+    const executeDelete = async () => {
+        const batch = writeBatch(db);
+        alunoIds.forEach(id => {
+            // CORREÇÃO: Aponta para escolas/{id}/alunos/{alunoId}
+            const docRef = doc(db, 'escolas', firestoreUser.escolaId, 'alunos', id);
+            batch.delete(docRef);
+        });
+        await batch.commit();
     };
+    
+    const message = alunoIds.length === 1 
+        ? "Tem a certeza de que quer excluir este aluno?" 
+        : `Tem a certeza de que quer excluir os ${alunoIds.length} alunos selecionados?`;
+
+    confirmAction(message, executeDelete);
+};
   
   const handleUpdateAluno = async (updatedAluno) => {
       const { id, ...alunoData } = updatedAluno;
-      if (!id) {
-        console.error("Attempted to update an aluno without an ID.");
+      if (!id || !firestoreUser?.escolaId) {
+        console.error("Tentativa de atualização de um aluno sem ID ou ID escolar.");
         return;
       }
-      const docRef = doc(db, 'alunos', id);
+      // Atualiza dentro da sub-coleção da escola
+      const docRef = doc(db, 'escolas', firestoreUser.escolaId, 'alunos', id);
       await updateDoc(docRef, alunoData);
   }
 
   const handleAddOrUpdateTurma = async (turmaData, editingId) => {
+    if (!firestoreUser?.escolaId) return;
+    const escolaId = firestoreUser.escolaId;
+
     const dataToSave = {
         nome: turmaData.nome,
         horario: turmaData.horario,
         professores: [{id: 1, nome: turmaData.professor}],
     };
     if (editingId) {
-        const docRef = doc(db, 'turmas', editingId);
+        // CORREÇÃO: Atualizar dentro da escola
+        const docRef = doc(db, 'escolas', escolaId, 'turmas', editingId);
         await updateDoc(docRef, dataToSave);
     } else {
         const newTurma = {
@@ -3760,64 +3932,80 @@ useEffect(() => {
             planejamento: {},
             presenca: {}
         };
-        await addDoc(collection(db, 'turmas'), newTurma);
+        // CORREÇÃO: Criar dentro da escola
+        await addDoc(collection(db, 'escolas', escolaId, 'turmas'), newTurma);
     }
-  };
-  
-  const handleUpdateTurma = async (updatedTurma) => {
-      const { id, ...turmaData } = updatedTurma;
-      if (!id) {
-        console.error("Attempted to update a turma without an ID.");
-        return;
-      }
-      const docRef = doc(db, 'turmas', id);
-      await updateDoc(docRef, turmaData);
-  }
+        };
 
-  const handleDeleteTurma = async (turmaId) => {
-      await deleteDoc(doc(db, 'turmas', turmaId));
-      // You might want to remove this turmaId from all alunos in a batch write
-  };
+const handleUpdateTurma = async (updatedTurma) => {
+    const { id, ...turmaData } = updatedTurma;
+    if (!id || !firestoreUser?.escolaId) {
+        console.error("Erro: ID da turma ou escola faltando.");
+        return;
+    }
+    // CORREÇÃO
+    const docRef = doc(db, 'escolas', firestoreUser.escolaId, 'turmas', id);
+    await updateDoc(docRef, turmaData);
+        }
+
+const handleDeleteTurma = async (turmaId) => {
+    if (!firestoreUser?.escolaId) return;
+    // CORREÇÃO
+    await deleteDoc(doc(db, 'escolas', firestoreUser.escolaId, 'turmas', turmaId));
+        };
   
   const handleAddDespesa = async (despesaData) => {
-        try {
-            // Adiciona a nova despesa à coleção 'transacoes'
-            await addDoc(collection(db, 'transacoes'), despesaData);
-        } catch (error) {
-            console.error("Erro ao adicionar despesa:", error);
-        }
-    };
+    if (!firestoreUser?.escolaId) return;
+    try {
+        // CORREÇÃO: Salva em escolas/{id}/transacoes
+        await addDoc(collection(db, 'escolas', firestoreUser.escolaId, 'transacoes'), despesaData);
+    } catch (error) {
+        console.error("Erro ao adicionar despesa:", error);
+    }
+        };
 
-  const handleRemoveTransacao = async (transacaoId) => {
-        // Esta função agora SÓ deleta. A confirmação será feita no modal.
-        await deleteDoc(doc(db, 'transacoes', transacaoId));
-    };
+const handleAddReceita = async (receitaData) => {
+    if (!firestoreUser?.escolaId) return;
+    try {
+        // CORREÇÃO
+        await addDoc(collection(db, 'escolas', firestoreUser.escolaId, 'transacoes'), receitaData);
+    } catch (error) {
+        console.error("Erro ao adicionar receita:", error);
+    }
+        };
 
-  const handleAddReceita = async (receitaData) => {
-        try {
-            await addDoc(collection(db, 'transacoes'), receitaData);
-        } catch (error) {
-            console.error("Erro ao adicionar receita:", error);
-        }
-    };
+const handleRemoveTransacao = async (transacaoId) => {
+    if (!firestoreUser?.escolaId) return;
+    // CORREÇÃO
+    await deleteDoc(doc(db, 'escolas', firestoreUser.escolaId, 'transacoes', transacaoId));
+        };
+
   const handleAddMeta = async (text, status) => {
-        await addDoc(collection(db, 'metas'), { text, status: status || 'a_fazer' });
+    if (!firestoreUser?.escolaId) return;
+    // CORREÇÃO
+    await addDoc(collection(db, 'escolas', firestoreUser.escolaId, 'metas'), { text, status: status || 'a_fazer' });
     };
 
-    const handleUpdateMetaStatus = async (metaId, newStatus) => {
-        const docRef = doc(db, 'metas', metaId);
-        await updateDoc(docRef, { status: newStatus });
+const handleUpdateMetaStatus = async (metaId, newStatus) => {
+    if (!firestoreUser?.escolaId) return;
+    // CORREÇÃO
+    const docRef = doc(db, 'escolas', firestoreUser.escolaId, 'metas', metaId);
+    await updateDoc(docRef, { status: newStatus });
     };
-  
 
-  const handleDeleteMeta = async (metaId) => {
-      await deleteDoc(doc(db, 'metas', metaId));
-  };
+const handleDeleteMeta = async (metaId) => {
+    if (!firestoreUser?.escolaId) return;
+    // CORREÇÃO
+    await deleteDoc(doc(db, 'escolas', firestoreUser.escolaId, 'metas', metaId));
+    };
   
   
   const handleAddOrUpdateEvento = async (eventoData, editingId) => {
+    if (!firestoreUser?.escolaId) return;
+    const escolaId = firestoreUser.escolaId;
+
     try {
-        // 1. Cria uma cópia limpa dos dados, garantindo que 'partidas' seja um array
+        // ... (código de preparação dos dados dataToSave continua igual) ...
         const dataToSave = {
             title: eventoData.title || '',
             local: eventoData.local || '',
@@ -3826,69 +4014,88 @@ useEffect(() => {
             escalacao: eventoData.escalacao || [],
             taxaInscricao: Number(eventoData.taxaInscricao) || 0,
             avaliacoesPosEvento: eventoData.avaliacoesPosEvento || [],
-            partidas: eventoData.partidas || [], // Garante que o campo exista
+            partidas: eventoData.partidas || [],
             realizado: eventoData.realizado || false,
         };
 
-        // 2. Decide se vai atualizar um existente ou criar um novo
         if (editingId) {
-            const docRef = doc(db, 'eventos', editingId);
+            // CORREÇÃO
+            const docRef = doc(db, 'escolas', escolaId, 'eventos', editingId);
             await updateDoc(docRef, dataToSave);
         } else {
-            await addDoc(collection(db, 'eventos'), dataToSave);
+            // CORREÇÃO
+            await addDoc(collection(db, 'escolas', escolaId, 'eventos'), dataToSave);
         }
     } catch (error) {
-        // Este console.log nos ajudará a ver qualquer erro que o Firebase retorne
-        console.error("Erro ao salvar o evento:", error);
-        alert("Ocorreu um erro ao salvar o evento. Verifique o console para mais detalhes.");
+        console.error("Erro ao salvar evento:", error);
     }
-};
-  
-  const handleDeleteEvento = (eventoId, eventoTitle) => {
+    };
+
+const handleDeleteEvento = (eventoId, eventoTitle) => {
+    if (!firestoreUser?.escolaId) return;
     const executeDelete = async () => {
-        await deleteDoc(doc(db, 'eventos', eventoId));
+        // CORREÇÃO
+        await deleteDoc(doc(db, 'escolas', firestoreUser.escolaId, 'eventos', eventoId));
     };
     confirmAction(`Tem certeza que deseja remover o evento "${eventoTitle}"?`, executeDelete);
-};
-  
-  const handleToggleRealizado = async (evento) => {
-      const docRef = doc(db, 'eventos', evento.id);
-      await updateDoc(docRef, { realizado: !evento.realizado });
-  };
+    };
 
-  const handleAddCategoria = async (nome) => {
-      await addDoc(collection(db, 'categorias'), { nome });
-  };
+const handleToggleRealizado = async (evento) => {
+    if (!firestoreUser?.escolaId) return;
+    // CORREÇÃO
+    const docRef = doc(db, 'escolas', firestoreUser.escolaId, 'eventos', evento.id);
+    await updateDoc(docRef, { realizado: !evento.realizado });
+    };
 
-  const handleDeleteCategoria = async (categoriaId) => {
-      await deleteDoc(doc(db, 'categorias', categoriaId));
-  };
+const handleAddCategoria = async (nome) => {
+    if (!firestoreUser?.escolaId) return;
+    // CORREÇÃO
+    await addDoc(collection(db, 'escolas', firestoreUser.escolaId, 'categorias'), { nome });
+    };
+
+const handleDeleteCategoria = async (categoriaId) => {
+    if (!firestoreUser?.escolaId) return;
+    // CORREÇÃO
+    await deleteDoc(doc(db, 'escolas', firestoreUser.escolaId, 'categorias', categoriaId));
+    };
 
   const handleBulkUpdate = async (updates, creations, replacements) => {
-        const batch = writeBatch(db);
-        
-        // Processa as ATUALIZAÇÕES (alunos encontrados)
-        (updates || []).forEach(update => {
-            const docRef = doc(db, 'alunos', update.id);
-            batch.update(docRef, update.updates);
-        });
+    // SEGURANÇA: Verifica se o usuário tem uma escola vinculada
+    if (!firestoreUser?.escolaId) {
+        alert("Erro de segurança: Escola não identificada. Recarregue a página.");
+        return;
+    }
+    const escolaId = firestoreUser.escolaId;
 
-        // Processa as CRIAÇÕES (novos alunos)
-        (creations || []).forEach(newAluno => {
-            const docRef = doc(collection(db, 'alunos'));
-            batch.set(docRef, newAluno);
-        });
+    const batch = writeBatch(db);
+    
+    // Processa as ATUALIZAÇÕES (alunos encontrados)
+    (updates || []).forEach(update => {
+        // CORREÇÃO: Aponta para escolas/{id}/alunos/{alunoId}
+        const docRef = doc(db, 'escolas', escolaId, 'alunos', update.id);
+        batch.update(docRef, update.updates);
+    });
 
-        // Processa as SUBSTITUIÇÕES (erros de digitação)
-        (replacements || []).forEach(rep => {
-            const docRef = doc(db, 'alunos', rep.targetId);
-            // Ao substituir, também atualizamos o nome para o que veio do CSV
-            const finalUpdates = { ...rep.updates, nome: rep.updates.nome }; 
-            batch.update(docRef, finalUpdates);
-        });
-        
-        await batch.commit();
-    };
+    // Processa as CRIAÇÕES (novos alunos)
+    (creations || []).forEach(newAluno => {
+        // CORREÇÃO: Cria dentro da coleção de alunos da escola
+        const docRef = doc(collection(db, 'escolas', escolaId, 'alunos'));
+        batch.set(docRef, newAluno);
+    });
+
+    // Processa as SUBSTITUIÇÕES (erros de digitação)
+    (replacements || []).forEach(rep => {
+        // CORREÇÃO: Aponta para o aluno correto dentro da escola
+        const docRef = doc(db, 'escolas', escolaId, 'alunos', rep.targetId);
+        // Ao substituir, também atualizamos o nome para o que veio do CSV
+        const finalUpdates = { ...rep.updates, nome: rep.updates.nome }; 
+        batch.update(docRef, finalUpdates);
+    });
+    
+    await batch.commit();
+};
+
+
   
   // Confirmation and other UI logic remains largely the same
   const confirmAction = (message, onConfirm) => {
@@ -3903,6 +4110,15 @@ useEffect(() => {
     return (
         <div className="flex items-center justify-center h-screen bg-gray-100">
             <Loader size={48} className="animate-spin text-blue-600" />
+        </div>
+    );
+}
+
+if (currentUser && !firestoreUser && !authLoading) {
+    return (
+        <div className="flex flex-col items-center justify-center h-screen bg-gray-100 gap-4">
+            <Loader size={48} className="animate-spin text-blue-600" />
+            <h2 className="text-xl font-semibold text-gray-700">Configurando sua escola...</h2>
         </div>
     );
 }
@@ -3985,7 +4201,7 @@ if (!currentUser) {
 
   return (
     <div className="flex h-screen bg-gray-100 font-sans">
-      <Sidebar activeView={activeView} setActiveView={setActiveView} resetSelection={() => {setSelectedAluno(null); setSelectedTurma(null);}} onOpenSettings={() => setIsSettingsModalOpen(true)} userPermissions={userPermissions} />
+      <Sidebar activeView={activeView} setActiveView={setActiveView} resetSelection={() => {setSelectedAluno(null); setSelectedTurma(null);}} onOpenSettings={() => setIsSettingsModalOpen(true)} userPermissions={userPermissions} schoolName={schoolName} escolaId={firestoreUser?.escolaId} userRole={firestoreUser?.role} />
       <main className="flex-1 p-6 lg:p-10 overflow-y-auto">
         {renderView()}
       </main>
@@ -4009,7 +4225,7 @@ if (!currentUser) {
     {isBulkUpdateModalOpen && <AtualizacaoEmMassa alunos={alunos} onBulkUpdate={handleBulkUpdate} onClose={() => setIsBulkUpdateModalOpen(false)} />}
     </div>
   );
-}
+};
 
 // --- Componentes da Tela de Configurações ---
 
@@ -4084,13 +4300,73 @@ const FinancialSettings = ({ onApplyToAll, confirmAction }) => {
 
 const SettingsModal = ({ user, allUsers, onUpdateUserStatus, onUpdateUserRole, onClose, isAdmin, onLogout, currentUser, confirmAction, configs, onUpdateConfigs, onApplyDefaultFee }) => {
     const [activeTab, setActiveTab] = useState(isAdmin ? 'acesso' : 'perfil');
+    
+    // --- NOVO: Estado e Função para Copiar o ID ---
+    const [inviteCopied, setInviteCopied] = useState(false);
+
+    const handleCopySchoolId = () => {
+        if (user?.escolaId) {
+            navigator.clipboard.writeText(user.escolaId);
+            setInviteCopied(true);
+            setTimeout(() => setInviteCopied(false), 2000);
+        }
+    };
+    // ----------------------------------------------
 
     const renderContent = () => {
         switch (activeTab) {
+
+
             case 'perfil':
                 return <ProfileSettings user={user} />;
+            
             case 'acesso':
-                return <GestaoUsuarios allUsers={allUsers} onUpdateUserStatus={onUpdateUserStatus} onUpdateUserRole={onUpdateUserRole} currentUser={currentUser} confirmAction={confirmAction} />;
+                return (
+                    <div className="space-y-6">
+                        {/* --- NOVO CARD DE CONVITE (Visível apenas aqui) --- */}
+                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                                <div>
+                                    <h4 className="text-blue-900 font-bold flex items-center gap-2">
+                                        <Users size={18} />
+                                        Convidar Equipe
+                                    </h4>
+                                    <p className="text-sm text-blue-700 mt-1">
+                                        Envie este código para seus funcionários se cadastrarem.
+                                    </p>
+                                </div>
+                                
+                                <div className="flex items-center gap-2 bg-white p-2 rounded border border-blue-200 shadow-sm min-w-[280px]">
+                                    <code className="flex-1 font-mono text-sm text-gray-600 truncate px-2">
+                                        {user?.escolaId || "Carregando..."}
+                                    </code>
+                                    <button 
+                                        onClick={handleCopySchoolId}
+                                        className={`p-2 rounded transition-all duration-200 ${
+                                            inviteCopied 
+                                            ? "bg-green-100 text-green-700" 
+                                            : "bg-gray-100 text-gray-600 hover:bg-blue-100 hover:text-blue-600"
+                                        }`}
+                                        title="Copiar Código"
+                                    >
+                                        {inviteCopied ? <Check size={18} /> : <Copy size={18} />}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        {/* -------------------------------------------------- */}
+
+                        {/* Seu componente original continua aqui embaixo */}
+                        <GestaoUsuarios 
+                            allUsers={allUsers} 
+                            onUpdateUserStatus={onUpdateUserStatus} 
+                            onUpdateUserRole={onUpdateUserRole} 
+                            currentUser={currentUser} 
+                            confirmAction={confirmAction} 
+                        />
+                    </div>
+                );
+
             case 'financeiro':
                 return <FinancialSettings configs={configs} onUpdate={onUpdateConfigs} onApplyToAll={onApplyDefaultFee} confirmAction={confirmAction} />;
             default:
@@ -4101,7 +4377,10 @@ const SettingsModal = ({ user, allUsers, onUpdateUserStatus, onUpdateUserRole, o
     return (
         <div className="fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center z-40 p-4">
             <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl h-[90vh] flex flex-col">
-                <div className="flex justify-between items-center p-4 border-b"> <h2 className="text-2xl font-bold text-gray-800">Configurações</h2> <button onClick={onClose} className="text-gray-500 hover:text-gray-800"><X size={24} /></button> </div>
+                <div className="flex justify-between items-center p-4 border-b"> 
+                    <h2 className="text-2xl font-bold text-gray-800">Configurações</h2> 
+                    <button onClick={onClose} className="text-gray-500 hover:text-gray-800"><X size={24} /></button> 
+                </div>
                 <div className="flex flex-grow overflow-hidden">
                     <nav className="w-1/4 bg-gray-50 p-4 border-r flex flex-col justify-between">
                         <ul>
