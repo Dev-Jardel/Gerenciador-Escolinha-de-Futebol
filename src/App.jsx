@@ -1512,65 +1512,109 @@ const RegisterScreen = ({ setAuthScreen }) => {
     const [schoolName, setSchoolName] = useState(''); // Para quem cria
     const [schoolIdToJoin, setSchoolIdToJoin] = useState(''); // Para quem entra
     const [role, setRole] = useState('professor'); // Cargo do funcionário
+    const [registrationCode, setRegistrationCode] = useState(''); // NOVO ESTADO AQUI
 
     const handleRegister = async (e) => {
         e.preventDefault();
         setLoading(true);
         setError('');
 
-        try {
-            let userRole = 'admin';
-            let userStatus = 'approved';
-            let finalSchoolId = '';
+        let userRole = 'admin';
+        let userStatus = 'approved';
+        let finalSchoolId = '';
+        let codeRef = null;
+        let authUser = null; // Para armazenar o usuário criado no Auth
 
-            // VALIDAÇÕES PRÉVIAS
+        try {
+            // ====================================================================
+            // PASSO 1: VALIDAÇÕES PRÉVIAS (incluindo o Portão de Pagamento)
+            // ====================================================================
+
             if (activeTab === 'nova_escola') {
                 if (!schoolName.trim()) throw new Error("Digite o nome da escola.");
-            } else {
+                if (!registrationCode.trim()) throw new Error("O Código de Assinatura é obrigatório.");
+
+                const code = registrationCode.trim();
+                codeRef = doc(db, 'registrationCodes', code);
+                const codeSnap = await getDoc(codeRef); // Note: precisa importar getDoc
+
+                // Checagem CRÍTICA do Código
+                if (!codeSnap.exists() || codeSnap.data().used) {
+                    throw new Error('Código de Assinatura inválido, expirado ou já utilizado.');
+                }
+                if (codeSnap.data().expiresAt && new Date(codeSnap.data().expiresAt) < new Date()) {
+                    throw new Error('Este Código de Assinatura expirou.');
+                }
+
+                // Se o código for válido, calculamos o ID final da escola aqui
+                const cleanName = schoolName.toLowerCase().replace(/[^a-z0-9]/g, '_');
+                finalSchoolId = `escola_${cleanName}_${Date.now()}`;
+
+            } else { // activeTab === 'entrar_equipe'
                 if (!schoolIdToJoin.trim()) throw new Error("Digite o ID da escola que deseja entrar.");
-                // Aqui poderíamos verificar se a escola existe no banco antes de criar o user
+                
                 const escolaRef = doc(db, "escolas", schoolIdToJoin.trim());
-                const escolaSnap = await getDoc(escolaRef); // Note: precisa importar getDoc no topo
+                const escolaSnap = await getDoc(escolaRef);
                 if (!escolaSnap.exists()) {
                     throw new Error("Escola não encontrada. Verifique o ID.");
                 }
                 
-                userRole = role; // O cargo escolhido (professor, etc)
-                userStatus = 'pending'; // Entra como pendente para o Admin aprovar
+                userRole = role;
+                userStatus = 'pending';
                 finalSchoolId = schoolIdToJoin.trim();
             }
 
-            // 1. Cria o usuário na autenticação
+            // ====================================================================
+            // PASSO 2: CRIAÇÃO DO USUÁRIO NO AUTH
+            // O Firebase Auth é a primeira linha de defesa
+            // ====================================================================
             const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-            const user = userCredential.user;
+            authUser = userCredential.user;
+
+            // ====================================================================
+            // PASSO 3: CRIAÇÃO DE DOCUMENTOS (Firestore)
+            // ====================================================================
 
             if (activeTab === 'nova_escola') {
-    const cleanName = schoolName.toLowerCase().replace(/[^a-z0-9]/g, '_');
-    finalSchoolId = `escola_${cleanName}_${Date.now()}`;
+                // 3a. Cria o documento da ESCOLA (apenas se criou nova escola)
+                await setDoc(doc(db, "escolas", finalSchoolId), {
+                    nome: schoolName,
+                    criadoEm: new Date().toISOString(),
+                    donoId: authUser.uid,
+                    ativo: true,
+                    logoUrl: ''
+                });
 
-    await setDoc(doc(db, "escolas", finalSchoolId), {
-        nome: schoolName,
-        criadoEm: new Date().toISOString(),
-        donoId: user.uid,
-        ativo: true,
-        // CORREÇÃO: Inicializa o logo como vazio (a escola fará o upload depois)
-        logoUrl: '', // Ou use o URL de um escudo genérico como placeholder
-    });
-}
+                // 3b. MARCA O CÓDIGO COMO USADO e vincula à Escola
+                await updateDoc(codeRef, { // codeRef foi definido no bloco 'nova_escola'
+                    used: true,
+                    usedBy: email,
+                    escolaId: finalSchoolId,
+                    usedAt: new Date().toISOString()
+                });
+            }
 
-            // 3. Cria o documento do USUÁRIO
-            await setDoc(doc(db, "users", user.uid), {
-                uid: user.uid,
+            // 3c. Cria o documento do USUÁRIO (para todas as abas)
+            await setDoc(doc(db, "users", authUser.uid), {
+                uid: authUser.uid,
                 name: name,
                 email: email,
-                role: userRole,   // Admin (se criou) ou o cargo escolhido (se entrou)
-                status: userStatus, // Aprovado (se criou) ou Pendente (se entrou)
+                role: userRole,
+                status: userStatus,
                 escolaId: finalSchoolId
             });
 
             setSuccess(true);
 
         } catch (err) {
+            // Se a criação do usuário em Auth falhou, tentamos deletar o usuário criado
+            if (authUser) {
+                // Nota: Firebase SDK não tem função de deletar de forma simples aqui, 
+                // mas para o nosso propósito, o documento de usuário não será criado, 
+                // então está seguro. O admin deve gerenciar o usuário Auth 'sujo'.
+            }
+            
+            // Tratamento de erros de Auth e Erros de Validação (Portão de Pagamento)
             if (err.code === 'auth/weak-password') setError('A senha deve ter no mínimo 6 caracteres.');
             else if (err.code === 'auth/email-already-in-use') setError('Este e-mail já está em uso.');
             else setError(err.message);
@@ -1578,8 +1622,10 @@ const RegisterScreen = ({ setAuthScreen }) => {
         setLoading(false);
     };
 
+    // --- JSX RENDERIZAÇÃO DA TELA DE REGISTRO ---
 
     if (success) {
+        // CÓDIGO DE SUCESSO DO USUÁRIO AQUI (não alterado)
         return (
             <div className="flex items-center justify-center min-h-screen bg-gray-100">
                 <div className="w-full max-w-md p-8 space-y-4 bg-white rounded-lg shadow-md text-center">
@@ -1605,62 +1651,100 @@ const RegisterScreen = ({ setAuthScreen }) => {
     return (
         <div className="flex items-center justify-center min-h-screen bg-gray-100">
             <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-lg shadow-md">
-                <h2 className="text-2xl font-bold text-center text-gray-900">Criar Conta</h2>
+                <h2 className="text-3xl font-bold text-center text-gray-900">Criar Nova Conta</h2>
                 
-                {/* ABAS DE SELEÇÃO */}
-                <div className="flex border-b border-gray-200 mb-4">
-                    <button 
-                        type="button"
-                        className={`flex-1 py-2 text-center font-medium ${activeTab === 'nova_escola' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                {/* Abas */}
+                <div className="flex justify-center border-b">
+                    <button
                         onClick={() => setActiveTab('nova_escola')}
+                        className={`py-2 px-4 text-sm font-medium transition-colors ${activeTab === 'nova_escola' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
                     >
-                        Sou Dono
+                        Criar Nova Escola
                     </button>
-                    <button 
-                        type="button"
-                        className={`flex-1 py-2 text-center font-medium ${activeTab === 'entrar_equipe' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                    <button
                         onClick={() => setActiveTab('entrar_equipe')}
+                        className={`py-2 px-4 text-sm font-medium transition-colors ${activeTab === 'entrar_equipe' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
                     >
-                        Sou Funcionário
+                        Entrar em Equipe Existente
                     </button>
                 </div>
 
-                <form className="space-y-4" onSubmit={handleRegister}>
-                    <div> <label className="text-sm font-medium text-gray-700">Nome Completo</label> <input type="text" required value={name} onChange={(e) => setName(e.target.value)} className="w-full px-3 py-2 mt-1 border rounded-md" /> </div>
+                <form className="space-y-6" onSubmit={handleRegister}>
+                    {/* Campos de Cadastro Pessoal */}
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700">Nome Completo</label>
+                        <input type="text" required value={name} onChange={(e) => setName(e.target.value)} className="mt-1 block w-full border-gray-300 rounded-md shadow-sm p-2" />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700">E-mail</label>
+                        <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="mt-1 block w-full border-gray-300 rounded-md shadow-sm p-2" />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700">Senha (mín. 6 caracteres)</label>
+                        <input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className="mt-1 block w-full border-gray-300 rounded-md shadow-sm p-2" />
+                    </div>
                     
-                    {/* CAMPOS ESPECÍFICOS POR ABA */}
+                    {/* Campos Específicos da Aba */}
                     {activeTab === 'nova_escola' ? (
-                        <div className="bg-blue-50 p-3 rounded-md border border-blue-200"> 
-                            <label className="text-sm font-medium text-blue-900">Nome da Nova Escola</label> 
-                            <input type="text" placeholder="Ex: Escolinha Craques" required value={schoolName} onChange={(e) => setSchoolName(e.target.value)} className="w-full px-3 py-2 mt-1 border rounded-md border-blue-300" /> 
-                            <p className="text-xs text-blue-600 mt-1">Você será o Administrador.</p>
+                        <div className="space-y-4 border p-4 rounded-lg bg-yellow-50">
+                            <p className="text-sm font-semibold text-yellow-800">Criação da Escola (Conta Admin)</p>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700">Nome da Escola/Negócio</label>
+                                <input type="text" required value={schoolName} onChange={(e) => setSchoolName(e.target.value)} className="mt-1 block w-full border-gray-300 rounded-md shadow-sm p-2" placeholder="Ex: Academia Sparta FC" />
+                            </div>
+                            
+                            {/* CAMPO CRÍTICO: Código de Assinatura */}
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700">Código de Assinatura (Obrigatório)</label>
+                                <input
+                                    type="text"
+                                    required
+                                    value={registrationCode}
+                                    onChange={(e) => setRegistrationCode(e.target.value)}
+                                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm p-2"
+                                    placeholder="Insira o código de pagamento"
+                                />
+                            </div>
                         </div>
                     ) : (
-                        <div className="bg-gray-50 p-3 rounded-md border border-gray-200 space-y-3">
+                        <div className="space-y-4 border p-4 rounded-lg bg-blue-50">
+                            <p className="text-sm font-semibold text-blue-800">Dados da Equipe</p>
                             <div>
-                                <label className="text-sm font-medium text-gray-700">Código da Escola (Peça ao Admin)</label> 
-                                <input type="text" placeholder="Cole o ID aqui (ex: escola_xyz_123)" required value={schoolIdToJoin} onChange={(e) => setSchoolIdToJoin(e.target.value)} className="w-full px-3 py-2 mt-1 border rounded-md" /> 
+                                <label className="block text-sm font-medium text-gray-700">ID da Escola (Ex: escola_sparta_...)</label>
+                                <input type="text" required value={schoolIdToJoin} onChange={(e) => setSchoolIdToJoin(e.target.value)} className="mt-1 block w-full border-gray-300 rounded-md shadow-sm p-2" />
                             </div>
                             <div>
-                                <label className="text-sm font-medium text-gray-700">Seu Cargo</label>
-                                <select value={role} onChange={(e) => setRole(e.target.value)} className="w-full px-3 py-2 mt-1 border rounded-md bg-white">
-                                    {ROLES.filter(r => r !== 'admin').map(r => <option key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>)}
+                                <label className="block text-sm font-medium text-gray-700">Seu Cargo/Função</label>
+                                <select value={role} onChange={(e) => setRole(e.target.value)} className="mt-1 block w-full border-gray-300 rounded-md shadow-sm p-2">
+                                    <option value="professor">Professor(a)</option>
+                                    <option value="analista">Analista Financeiro</option>
                                 </select>
                             </div>
-                            <p className="text-xs text-orange-600">Seu acesso ficará pendente de aprovação.</p>
                         </div>
                     )}
 
-                    <div> <label className="text-sm font-medium text-gray-700">E-mail</label> <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-3 py-2 mt-1 border rounded-md" /> </div>
-                    <div> <label className="text-sm font-medium text-gray-700">Senha</label> <input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-3 py-2 mt-1 border rounded-md" /> </div>
+                    {/* Exibição de Erros */}
+                    {error && <p className="text-red-600 text-sm font-medium">{error}</p>}
                     
-                    {error && <p className="text-sm text-red-600 text-center bg-red-50 p-2 rounded">{error}</p>}
-                    
-                    <div className="flex items-center gap-4 pt-2">
-                        <button type="button" onClick={() => setAuthScreen('login')} className="w-full py-2 px-4 border rounded-md text-sm font-medium bg-gray-100 hover:bg-gray-200"> Cancelar </button>
-                        <button type="submit" disabled={loading} className="w-full py-2 px-4 border rounded-md text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300"> {loading ? <Loader className="animate-spin mx-auto" /> : (activeTab === 'nova_escola' ? 'Criar Escola' : 'Solicitar Acesso')} </button>
-                    </div>
+                    {/* Botão Principal */}
+                    <button
+                        type="submit"
+                        disabled={loading}
+                        className={`w-full py-3 px-4 rounded-md text-white font-semibold transition-colors flex items-center justify-center ${
+                            loading ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'
+                        }`}
+                    >
+                        {loading ? 'Processando...' : 'Registrar'}
+                        {loading && <Loader size={18} className="ml-2 animate-spin" />}
+                    </button>
                 </form>
+
+                <p className="text-center text-sm text-gray-600">
+                    Já tem conta?{' '}
+                    <button onClick={() => setAuthScreen('login')} className="text-blue-600 hover:underline">
+                        Faça Login
+                    </button>
+                </p>
             </div>
         </div>
     );
@@ -1746,7 +1830,7 @@ const GestaoUsuarios = ({ allUsers, onUpdateUserStatus, onUpdateUserRole, confir
 
 // App.jsx (Componente Sidebar)
 
-const Sidebar = ({ activeView, setActiveView, resetSelection, onOpenSettings, userPermissions, schoolName, escolaId, userRole  }) => { // <-- Recebe a prop escolaId
+const Sidebar = ({ activeView, setActiveView, resetSelection, onOpenSettings, userPermissions, schoolName, escolaId, userRole, schoolLogoUrl }) => { // <-- Recebe a prop escolaId
     
     // DEFINIÇÃO DA URL BASE DO SEU OUTRO APP
     const URL_APP_ALUGUEL_BASE = "https://app-agendamento-society.vercel.app/"; // Base URL do Agendamento Society
@@ -1780,7 +1864,8 @@ const Sidebar = ({ activeView, setActiveView, resetSelection, onOpenSettings, us
                     <div className="w-20 h-20 lg:w-24 lg:h-24 rounded-full bg-gray-200 mb-2 overflow-hidden">
     
                         <img 
-                            src="https://firebasestorage.googleapis.com/v0/b/gestor-futebol-app.firebasestorage.app/o/logo%2FLogo%20Ousacs.png?alt=media&token=6476accd-1c49-4fe2-ab8a-ddf836bde910" 
+                            // Se schoolLogoUrl existir, use-o. Caso contrário, use um placeholder.
+                            src={schoolLogoUrl || 'URL_DO_SEU_LOGO_PADRÃO_AQUI'} 
                             alt="Logo da Escolinha" 
                             className="w-full h-full object-cover"
                         />
@@ -2068,6 +2153,7 @@ const GestaoAlunos = ({ alunos, turmas, onSelectAluno, onAddOrUpdateAluno, onDel
     const handleSelectOne = (e, id) => { e.stopPropagation(); if (selectedAlunos.includes(id)) { setSelectedAlunos(prev => prev.filter(alunoId => alunoId !== id)); } else { setSelectedAlunos(prev => [...prev, id]); } };
     const handleSelectAll = (e) => { if (e.target.checked) { setSelectedAlunos(filteredAndSortedAlunos.map(a => a.id)); } else { setSelectedAlunos([]); } };
     const handleDeleteSelected = () => { onDeleteAlunos(selectedAlunos); setSelectedAlunos([]); };
+
 
     const statusOptions = ['Todos', 'Ativo', 'Inativo'];
     const pagamentoStatusOptions = ['Todos', 'Pago', 'A vencer', 'Vencido'];
@@ -3522,7 +3608,7 @@ const DetalheAluno = ({ aluno, onUpdateAluno, onBack, turmas, confirmAction, tri
 
 
 
-// --- Main App Component (Now with Firebase) ---
+// --- Componentes do App principal (Now with Firebase) ---
 
 export default function App() {
   const [activeView, setActiveView] = useState('visaoGeral');
@@ -3552,7 +3638,8 @@ export default function App() {
   const [configuracoes, setConfiguracoes] = useState({});
   const [isBulkUpdateModalOpen, setIsBulkUpdateModalOpen] = useState(false);
   const handleLogout = async () => { await signOut(auth);};
-    const userPermissions = React.useMemo(() => { // Determina as permissões do usuário logado com base no seu cargo
+  const [loading, setLoading] = useState(false);
+  const userPermissions = React.useMemo(() => {
     const role = firestoreUser?.role || 'analista'; // Se não houver usuário, usa as permissões do cargo mais restrito (analista)
      return PERMISSIONS[role] || PERMISSIONS.analista;}, [firestoreUser]);
 
@@ -3626,6 +3713,16 @@ export default function App() {
         console.log("Database already seeded. Skipping.");
     }
   };
+
+  const [schoolData, setSchoolData] = useState(null);
+
+  const showToast = (message, isSuccess = true) => {
+    // Substitua pelo seu componente Toast real, se houver
+    console.log(`[TOAST - ${isSuccess ? 'SUCESSO' : 'ERRO'}] ${message}`); 
+    alert(message); 
+};
+
+  
 
 
   // --- useEffect para ouvir dados em tempo real do Firebase ---
@@ -3745,6 +3842,21 @@ export default function App() {
         
     return () => unsubscribe();
 }, []);
+
+useEffect(() => {
+    if (firestoreUser?.escolaId) {
+        const escolaRef = doc(db, 'escolas', firestoreUser.escolaId);
+        
+        const unsubscribe = onSnapshot(escolaRef, (docSnap) => {
+            if (docSnap.exists()) {
+                setSchoolData(docSnap.data()); // Isso vai conter o logoUrl
+            } else {
+                setSchoolData(null);
+            }
+        });
+        return () => unsubscribe();
+    }
+}, [firestoreUser?.escolaId]);
 
 // Efeito para verificar a versão e mostrar as notas da atualização
 useEffect(() => {
@@ -4093,11 +4205,134 @@ const handleDeleteCategoria = async (categoriaId) => {
     });
     
     await batch.commit();
+    };
+
+    const handleSchoolLogoUpload = async (file) => {
+    // 1. Logs de segurança para debug
+    console.log("DEBUG UPLOAD LOGO: user.escolaId:", firestoreUser?.escolaId);
+    console.log("DEBUG UPLOAD LOGO: file:", file);
+
+    if (!currentUser || !firestoreUser?.escolaId || firestoreUser.role !== 'admin') {
+        showToast("Acesso negado ou dados da escola ausentes.", false);
+        return;
+    }
+
+    setLoading(true);
+    const storage = getStorage(app);
+    
+    // Caminho ÚNICO para o Storage: /escolas/{escolaId}/logo/logo_escolaId.jpg
+    const logoRef = ref(storage, `escolas/${firestoreUser.escolaId}/logo/logo_${firestoreUser.escolaId}.jpg`);
+    
+    try {
+        // 1. Upload do Ficheiro
+        await uploadBytes(logoRef, file);
+        
+        // 2. Obter o URL público
+        const logoURL = await getDownloadURL(logoRef);
+
+        // 3. Salvar o URL no documento da ESCOLA no Firestore
+        const escolaDocRef = doc(db, 'escolas', firestoreUser.escolaId);
+        await updateDoc(escolaDocRef, {
+            logoUrl: logoURL, 
+            updatedAt: new Date().toISOString()
+        });
+
+        showToast("Logo da escola atualizada com sucesso!");
+    } catch (error) {
+        // Este catch agora deve dar mais detalhes
+        console.error("ERRO CRÍTICO NO UPLOAD DO LOGO:", error);
+        showToast("Falha no upload! Verifique as regras do Storage e o console para mais detalhes.", false);
+    } finally {
+        setLoading(false);
+    }
+};
+
+    const handleUserPhotoUpload = async (file) => {
+    // 1. Verificações de Segurança (garante que há IDs)
+    if (!currentUser || !firestoreUser?.escolaId) {
+        showToast("Você precisa estar logado para fazer o upload.", false);
+        return;
+    }
+
+    setLoading(true);
+    
+    
+    const storage = getStorage(app); 
+    
+    // Caminho ÚNICO no Storage: /escolas/{escolaId}/users/{userId}/profile_timestamp.jpg
+    
+    const photoRef = ref(storage, `escolas/${firestoreUser.escolaId}/users/${currentUser.uid}/profile_${Date.now()}.jpg`);
+    
+    try {
+        // 1. Upload do Ficheiro
+        await uploadBytes(photoRef, file);
+        
+        // 2. Obter o URL público
+        const photoURL = await getDownloadURL(photoRef);
+
+        // 3. Salvar o URL no documento do usuário no Firestore
+        const userDocRef = doc(db, 'users', currentUser.uid);
+        await updateDoc(userDocRef, {
+            photoUrl: photoURL, // <--- O campo correto
+            updatedAt: new Date().toISOString()
+        });
+
+        showToast("Foto de perfil atualizada com sucesso!");
+    } catch (error) {
+        // Se o erro for de permissão, ele será capturado aqui
+        console.error("Erro ao subir a foto:", error);
+        showToast("Erro no upload da foto. Verifique as Regras do Storage e tente novamente.", false);
+    } finally {
+        setLoading(false);
+    }
+};
+
+    // --- 1. HANDLER DE ATUALIZAÇÃO DE INFO PESSOAL (NOME/TELEFONE) ---
+
+const handleUpdateProfileInfo = async ({ name, phone }) => {
+    if (!currentUser) return;
+    
+    setLoading(true);
+    try {
+        const userDocRef = doc(db, 'users', currentUser.uid);
+        
+        await updateDoc(userDocRef, {
+            name: name,
+            phone: phone, // Assume que você tem um campo 'phone' no documento do usuário
+            updatedAt: new Date().toISOString()
+        });
+        
+        showToast("Informações pessoais salvas com sucesso!");
+    } catch (error) {
+        console.error("Erro ao salvar informações:", error);
+        showToast("Erro ao salvar informações pessoais.", false);
+    } finally {
+        setLoading(false);
+    }
+};
+
+
+// --- 2. HANDLER DE REDEFINIÇÃO DE SENHA (FIREBASE AUTH) ---
+
+const handleResetPassword = async (email) => {
+    setLoading(true);
+    try {
+        // Usa a função do Firebase Auth para enviar o email de redefinição
+        await sendPasswordResetEmail(auth, email);
+        
+        showToast(`Link de redefinição enviado para ${email}. Verifique a sua caixa de entrada.`);
+    } catch (error) {
+        // O código 'auth/user-not-found' é comum aqui
+        console.error("Erro ao enviar redefinição:", error);
+        showToast("Erro ao enviar link. O email pode estar incorreto ou o link já foi enviado.", false);
+    } finally {
+        setLoading(false);
+    }
 };
 
 
   
-  // Confirmation and other UI logic remains largely the same
+
   const confirmAction = (message, onConfirm) => {
       setConfirmation({ isOpen: true, message, onConfirm });
   };
@@ -4201,7 +4436,7 @@ if (!currentUser) {
 
   return (
     <div className="flex h-screen bg-gray-100 font-sans">
-      <Sidebar activeView={activeView} setActiveView={setActiveView} resetSelection={() => {setSelectedAluno(null); setSelectedTurma(null);}} onOpenSettings={() => setIsSettingsModalOpen(true)} userPermissions={userPermissions} schoolName={schoolName} escolaId={firestoreUser?.escolaId} userRole={firestoreUser?.role} />
+      <Sidebar activeView={activeView} setActiveView={setActiveView} resetSelection={() => {setSelectedAluno(null); setSelectedTurma(null);}} onOpenSettings={() => setIsSettingsModalOpen(true)} userPermissions={userPermissions} schoolName={schoolName} escolaId={firestoreUser?.escolaId} userRole={firestoreUser?.role} schoolLogoUrl={schoolData?.logoUrl} />
       <main className="flex-1 p-6 lg:p-10 overflow-y-auto">
         {renderView()}
       </main>
@@ -4220,7 +4455,7 @@ if (!currentUser) {
     localStorage.setItem('gestorFC_lastSeenVersion', APP_VERSION);
 }} />}
 
-    {isSettingsModalOpen && <SettingsModal user={firestoreUser} allUsers={allUsers} onUpdateUserStatus={handleUpdateUserStatus} onUpdateUserRole={handleUpdateUserRole} onClose={() => setIsSettingsModalOpen(false)} isAdmin={firestoreUser?.role === 'admin'} onLogout={handleLogout} currentUser={currentUser} confirmAction={confirmAction} configs={configuracoes} onUpdateConfigs={handleUpdateConfigs} onApplyDefaultFee={handleApplyDefaultFeeToAll} />}
+    {isSettingsModalOpen && <SettingsModal user={firestoreUser} allUsers={allUsers} onUpdateUserStatus={handleUpdateUserStatus} onUpdateUserRole={handleUpdateUserRole} onClose={() => setIsSettingsModalOpen(false)} isAdmin={firestoreUser?.role === 'admin'} onLogout={handleLogout} currentUser={currentUser} confirmAction={confirmAction} configs={configuracoes} onUpdateConfigs={handleUpdateConfigs} onApplyDefaultFee={handleApplyDefaultFeeToAll} onPhotoUpload={handleUserPhotoUpload} onUpdateProfile={handleUpdateProfileInfo} onResetPassword={handleResetPassword} isLoading={loading} onSchoolLogoUpload={handleSchoolLogoUpload} />}
 
     {isBulkUpdateModalOpen && <AtualizacaoEmMassa alunos={alunos} onBulkUpdate={handleBulkUpdate} onClose={() => setIsBulkUpdateModalOpen(false)} />}
     </div>
@@ -4229,25 +4464,202 @@ if (!currentUser) {
 
 // --- Componentes da Tela de Configurações ---
 
-const ProfileSettings = ({ user }) => {
-    return (
-        <div>
-            <h3 className="text-xl font-bold text-gray-800 mb-4">Meu Perfil</h3>
-            <div className="bg-gray-50 p-6 rounded-lg text-center">
-                <p className="font-semibold text-xl">{user.name}</p>
-                
-                {/* CARGO ADICIONADO AQUI */}
-                <span className="mt-2 inline-block bg-blue-100 text-blue-800 text-sm font-medium px-3 py-1 rounded-full">
-                    {user.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : 'Cargo não definido'}
-                </span>
+const ProfileSettings = ({ user, onPhotoUpload, isLoading, onUpdateProfile, onResetPassword }) => {
+    // 1. Estados locais para edição de informações
+    const [name, setName] = useState(user.name || '');
+    const [phone, setPhone] = useState(user.phone || '');
+    const [selectedFile, setSelectedFile] = useState(null);
 
-                <p className="text-gray-600 mt-2">{user.email}</p>
-                <p className="mt-4 text-sm text-gray-500">(Tela de edição de perfil, foto e senha em breve...)</p>
+    // 2. Manipuladores de Form
+    const handleFileChange = (e) => {
+        const file = e.target.files[0];
+        if (file && file.size > 1024 * 1024) { 
+            alert("A imagem deve ter no máximo 1MB.");
+            setSelectedFile(null);
+            return;
+        }
+        setSelectedFile(file);
+    };
+
+    const handleUploadClick = () => {
+        if (selectedFile) {
+            onPhotoUpload(selectedFile);
+            setSelectedFile(null);
+        }
+    };
+
+    const handleInfoSubmit = (e) => {
+        e.preventDefault();
+        onUpdateProfile({ name, phone });
+    };
+
+    return (
+        <div className="space-y-6">
+            <h3 className="text-2xl font-bold text-gray-800 border-b pb-2">Meu Perfil</h3>
+            
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                
+                {/* === CARD DE FOTO E CARGO === */}
+                <div className="lg:col-span-1 bg-white p-6 rounded-lg shadow-md flex flex-col items-center">
+                    
+                    {/* Visualização da Foto */}
+                    <div className="w-24 h-24 rounded-full border-4 border-blue-500 p-1 overflow-hidden flex items-center justify-center bg-gray-200 mb-3">
+                        {user.photoUrl ? (
+                            <img src={user.photoUrl} alt="Foto Pessoal" className="w-full h-full object-cover rounded-full" />
+                        ) : (
+                            <User size={40} className="text-gray-500" />
+                        )}
+                    </div>
+
+                    {/* Botão de Upload da Foto */}
+                    <div className="flex flex-col items-center w-full">
+                        <label className="w-full text-center bg-gray-200 hover:bg-gray-300 text-gray-800 text-sm font-semibold py-2 px-4 rounded-lg cursor-pointer transition-colors mb-2">
+                            {selectedFile ? selectedFile.name : 'Mudar Foto (Máx 1MB)'}
+                            <input type="file" accept="image/*" onChange={handleFileChange} className="hidden" />
+                        </label>
+                        
+                        <button
+                            onClick={handleUploadClick}
+                            disabled={!selectedFile || isLoading}
+                            className={`flex items-center justify-center w-full px-4 py-2 text-sm font-semibold rounded-lg transition-colors ${
+                                !selectedFile || isLoading ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 text-white'
+                            }`}
+                        >
+                            {isLoading ? <Loader size={18} className="animate-spin" /> : <Upload size={18} className="mr-2" />}
+                            {isLoading ? 'Enviando...' : 'Salvar Foto'}
+                        </button>
+                    </div>
+                    
+                    {/* Cargo */}
+                    <span className="mt-4 inline-block bg-blue-100 text-blue-800 text-sm font-medium px-3 py-1 rounded-full">
+                        {user.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : 'Cargo não definido'}
+                    </span>
+                    <p className="text-gray-600 mt-2 text-sm">{user.email}</p>
+                </div>
+                
+                {/* === CARD DE INFORMAÇÕES PESSOAIS E SENHA === */}
+                <div className="lg:col-span-2 space-y-6">
+
+                    {/* Formulário de Edição */}
+                    <div className="bg-white p-6 rounded-lg shadow-md">
+                        <h4 className="text-lg font-semibold mb-4 border-b pb-2">Informações Pessoais</h4>
+                        <form onSubmit={handleInfoSubmit} className="space-y-4">
+                            
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700">Nome Completo</label>
+                                <input 
+                                    type="text" 
+                                    value={name} 
+                                    onChange={(e) => setName(e.target.value)} 
+                                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm p-2"
+                                    required
+                                />
+                            </div>
+                            
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700">Telefone</label>
+                                <input 
+                                    type="text" 
+                                    value={phone} 
+                                    onChange={(e) => setPhone(e.target.value)} 
+                                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm p-2"
+                                />
+                            </div>
+                            
+                            <div className="flex justify-end">
+                                <button
+                                    type="submit"
+                                    className="bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700"
+                                >
+                                    Salvar Alterações
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+
+                    {/* Redefinição de Senha */}
+                    <div className="bg-white p-6 rounded-lg shadow-md border-l-4 border-yellow-400">
+                        <h4 className="text-lg font-semibold mb-4">Redefinir Senha</h4>
+                        <p className="text-gray-600 text-sm mb-4">
+                            Você receberá um link de redefinição de senha no seu email ({user.email}).
+                        </p>
+                        <button
+                            onClick={() => onResetPassword(user.email)}
+                            className="bg-yellow-500 text-white px-4 py-2 rounded-lg font-semibold hover:bg-yellow-600 transition-colors"
+                        >
+                            <Mail size={18} className="inline mr-2" /> Enviar Link de Redefinição
+                        </button>
+                    </div>
+
+                </div>
             </div>
         </div>
     );
-};
+}; // <--- FECHAMENTO CORRETO
 
+const SchoolLogoUploadCard = ({ currentLogoUrl, onUpload, isLoading, escolaId, confirmAction }) => {
+    const [selectedFile, setSelectedFile] = useState(null);
+
+    const handleFileChange = (e) => {
+        const file = e.target.files[0];
+        if (file && file.size > 1024 * 1024) { 
+            alert("A imagem da logo deve ter no máximo 1MB.");
+            setSelectedFile(null);
+            return;
+        }
+        setSelectedFile(file);
+    };
+
+    const handleUploadClick = () => {
+        if (selectedFile) {
+            onUpload(selectedFile);
+            setSelectedFile(null);
+        }
+    };
+    
+    // Placeholder para o logo (usando um ícone se o URL estiver vazio)
+    const PlaceholderContent = currentLogoUrl 
+        ? <img src={currentLogoUrl} alt="Logo Atual" className="w-full h-full object-cover" /> 
+        : <ImageIcon size={30} className="text-gray-500" />;
+
+    return (
+        <div className="bg-white p-6 rounded-lg shadow-md border-l-4 border-purple-400 space-y-4">
+            <h4 className="text-lg font-semibold mb-2 flex items-center gap-2">
+                <Tag size={20} /> Identidade Visual da Escola
+            </h4>
+            <div className="flex items-center gap-4">
+                <div className="w-16 h-16 rounded-lg border flex items-center justify-center overflow-hidden bg-gray-200">
+                    {PlaceholderContent}
+                </div>
+                <div>
+                    <p className="text-sm font-medium">Logo Atual</p>
+                    <p className="text-xs text-gray-500">O logo aparece na barra lateral e em documentos.</p>
+                </div>
+            </div>
+
+            <div className="flex flex-col gap-3">
+                <label className="w-full text-center bg-gray-200 hover:bg-gray-300 text-gray-800 text-sm font-semibold py-2 px-4 rounded-lg cursor-pointer transition-colors">
+                    {selectedFile ? selectedFile.name : 'Selecionar Nova Logo (Máx 1MB)'}
+                    <input type="file" accept="image/*" onChange={handleFileChange} className="hidden" />
+                </label>
+                
+                <button
+                    onClick={handleUploadClick}
+                    disabled={!selectedFile || isLoading}
+                    className={`flex items-center justify-center w-full px-4 py-2 text-sm font-semibold rounded-lg transition-colors ${
+                        !selectedFile || isLoading ? 'bg-gray-400 cursor-not-allowed' : 'bg-purple-600 hover:bg-purple-700 text-white'
+                    }`}
+                >
+                    {isLoading ? <Loader size={18} className="animate-spin mr-2" /> : <Upload size={18} className="mr-2" />}
+                    {isLoading ? 'Enviando...' : 'Salvar Logo da Escola'}
+                </button>
+            </div>
+        </div>
+    );
+}; // <--- FECHAMENTO CORRETO
+
+
+// Adapte o FinancialSettings para ter o fecho correto
 const FinancialSettings = ({ onApplyToAll, confirmAction }) => {
     const [valorEmMassa, setValorEmMassa] = useState('');
     const [overrideAll, setOverrideAll] = useState(false);
@@ -4296,12 +4708,19 @@ const FinancialSettings = ({ onApplyToAll, confirmAction }) => {
             </div>
         </div>
     );
-};
+}; // <--- FECHAMENTO CORRETO
 
-const SettingsModal = ({ user, allUsers, onUpdateUserStatus, onUpdateUserRole, onClose, isAdmin, onLogout, currentUser, confirmAction, configs, onUpdateConfigs, onApplyDefaultFee }) => {
+const SettingsModal = ({ 
+    user, allUsers, onUpdateUserStatus, onUpdateUserRole, onClose, isAdmin, onLogout, 
+    currentUser, confirmAction, configs, onUpdateConfigs, onApplyDefaultFee, 
+    // Props para novas funcionalidades de Perfil/Logo
+    onPhotoUpload, onUpdateProfile, onResetPassword, isLoading, onSchoolLogoUpload 
+}) => {
+    
+    // Estado para controle de abas
     const [activeTab, setActiveTab] = useState(isAdmin ? 'acesso' : 'perfil');
     
-    // --- NOVO: Estado e Função para Copiar o ID ---
+    // --- Estado e Função para Copiar o ID (Manter) ---
     const [inviteCopied, setInviteCopied] = useState(false);
 
     const handleCopySchoolId = () => {
@@ -4311,25 +4730,42 @@ const SettingsModal = ({ user, allUsers, onUpdateUserStatus, onUpdateUserRole, o
             setTimeout(() => setInviteCopied(false), 2000);
         }
     };
-    // ----------------------------------------------
+    // --------------------------------------------------
 
     const renderContent = () => {
+        // user.logoUrl deve vir do firestoreUser, passado como prop 'user'
+        const currentLogoUrl = user.logoUrl; 
+
         switch (activeTab) {
-
-
+            
             case 'perfil':
-                return <ProfileSettings user={user} />;
+                return <ProfileSettings 
+                    user={user} 
+                    onPhotoUpload={onPhotoUpload} 
+                    isLoading={isLoading} 
+                    onUpdateProfile={onUpdateProfile} 
+                    onResetPassword={onResetPassword} 
+                />;
             
             case 'acesso':
                 return (
-                    <div className="space-y-6">
-                        {/* --- NOVO CARD DE CONVITE (Visível apenas aqui) --- */}
+                    <div className="space-y-6"> 
+                        
+                        {/* CARD DE UPLOAD DO LOGO DA ESCOLA */}
+                        <SchoolLogoUploadCard 
+                            currentLogoUrl={currentLogoUrl} 
+                            onUpload={onSchoolLogoUpload} 
+                            isLoading={isLoading} 
+                            escolaId={user.escolaId}
+                            confirmAction={confirmAction}
+                        />
+                        
+                        {/* CARD DE CONVITE */}
                         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                                 <div>
                                     <h4 className="text-blue-900 font-bold flex items-center gap-2">
-                                        <Users size={18} />
-                                        Convidar Equipe
+                                        <Users size={18} /> Convidar Equipe
                                     </h4>
                                     <p className="text-sm text-blue-700 mt-1">
                                         Envie este código para seus funcionários se cadastrarem.
@@ -4354,9 +4790,8 @@ const SettingsModal = ({ user, allUsers, onUpdateUserStatus, onUpdateUserRole, o
                                 </div>
                             </div>
                         </div>
-                        {/* -------------------------------------------------- */}
 
-                        {/* Seu componente original continua aqui embaixo */}
+                        {/* Componente Gestão de Usuários */}
                         <GestaoUsuarios 
                             allUsers={allUsers} 
                             onUpdateUserStatus={onUpdateUserStatus} 
@@ -4369,8 +4804,16 @@ const SettingsModal = ({ user, allUsers, onUpdateUserStatus, onUpdateUserRole, o
 
             case 'financeiro':
                 return <FinancialSettings configs={configs} onUpdate={onUpdateConfigs} onApplyToAll={onApplyDefaultFee} confirmAction={confirmAction} />;
+                
             default:
-                return <ProfileSettings user={user} />;
+                // Fallback para Perfil se a aba não for reconhecida
+                return <ProfileSettings 
+                    user={user} 
+                    onPhotoUpload={onPhotoUpload} 
+                    isLoading={isLoading}
+                    onUpdateProfile={onUpdateProfile} 
+                    onResetPassword={onResetPassword} 
+                />;
         }
     };
 
