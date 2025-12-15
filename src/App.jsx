@@ -1609,9 +1609,7 @@ const RegisterScreen = ({ setAuthScreen }) => {
         } catch (err) {
             // Se a criação do usuário em Auth falhou, tentamos deletar o usuário criado
             if (authUser) {
-                // Nota: Firebase SDK não tem função de deletar de forma simples aqui, 
-                // mas para o nosso propósito, o documento de usuário não será criado, 
-                // então está seguro. O admin deve gerenciar o usuário Auth 'sujo'.
+                
             }
             
             // Tratamento de erros de Auth e Erros de Validação (Portão de Pagamento)
@@ -1625,7 +1623,7 @@ const RegisterScreen = ({ setAuthScreen }) => {
     // --- JSX RENDERIZAÇÃO DA TELA DE REGISTRO ---
 
     if (success) {
-        // CÓDIGO DE SUCESSO DO USUÁRIO AQUI (não alterado)
+        // CÓDIGO DE SUCESSO DO USUÁRIO AQUI
         return (
             <div className="flex items-center justify-center min-h-screen bg-gray-100">
                 <div className="w-full max-w-md p-8 space-y-4 bg-white rounded-lg shadow-md text-center">
