@@ -1166,7 +1166,7 @@ const EventoModal = ({ evento, onClose, onSave, categorias, onAddCategoria, onDe
                         <button onClick={onClose} className="text-gray-500 hover:text-gray-800"><X size={24} /></button>
                     </div>
                     <form onSubmit={handleSubmit} className="space-y-4">
-                        {/* ... (resto do formulário do EventoModal) ... */}
+                       
                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div> <label className="block text-sm font-medium text-gray-700">Título do Evento</label> <input type="text" name="title" value={formData.title} onChange={handleChange} className="mt-1 block w-full border-gray-300 rounded-md shadow-sm" required /> </div>
                             <div> <label className="block text-sm font-medium text-gray-700">Local Principal</label> <input type="text" name="local" value={formData.local} onChange={handleChange} className="mt-1 block w-full border-gray-300 rounded-md shadow-sm" /> </div>
@@ -3401,7 +3401,7 @@ const HistoricoPresencaAluno = ({ aluno, turmas }) => {
     );
 };
 
-const DetalheAluno = ({ aluno, onUpdateAluno, onBack, turmas, confirmAction, triggerUndo, isModal = false, onClose = () => {} }) => {
+const DetalheAluno = ({ aluno, onUpdateAluno, onBack, turmas, confirmAction, escolaId, triggerUndo, isModal = false, onClose = () => {} }) => {
     const [isAvaliacaoModalOpen, setAvaliacaoModalOpen] = React.useState(false);
     const [editingAvaliacao, setEditingAvaliacao] = React.useState(null);
     const [isPagamentoModalOpen, setPagamentoModalOpen] = React.useState(false);
@@ -3422,24 +3422,41 @@ const DetalheAluno = ({ aluno, onUpdateAluno, onBack, turmas, confirmAction, tri
     const handleGenerateSummary = async () => { setIsSummaryLoading(true); setIsSummaryModalOpen(true); const historicoFormatado = (aluno.avaliacoes || []).map(av => `Data: ${new Date(av.data).toLocaleDateString('pt-BR')}, Peso: ${av.peso}, Altura: ${av.altura}, Velocidade: ${av.velocidade}, Salto: ${av.salto}, Observações: ${av.observacoes}`).join('\n'); const prompt = `Você é um treinador de futebol experiente. Analise o seguinte histórico de avaliações do atleta ${aluno.nome} e escreva um resumo conciso (em 2 ou 3 parágrafos) sobre seu desempenho e evolução. Destaque os pontos fortes e as áreas que precisam de melhoria, oferecendo um feedback construtivo.\n\nHistórico:\n${historicoFormatado}`; const result = await callGemini(prompt); setSummaryContent(result); setIsSummaryLoading(false); };
     const handleFieldUpdate = (field, value) => { onUpdateAluno({ ...aluno, [field]: value }); };
     
-    // LÓGICA DA FOTO 100% CORRIGIDA PARA O FIREBASE STORAGE
-    const handleFotoChange = async (e) => {
+    /// LÓGICA DA FOTO 100% CORRIGIDA PARA O FIREBASE STORAGE
+const handleFotoChange = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
         setIsUploadingFoto(true);
 
-        // Se já existe uma foto, apaga a antiga do Storage primeiro
+        // 1. Obter o ID da Escola
+        // REMOVIDO: const escolaId = firestoreUser.escolaId; 
+        // USANDO: escolaId que veio diretamente das props!
+
+        // 2. Se já existe uma foto, apaga a antiga do Storage primeiro
         if (aluno.fotoStoragePath) {
             const oldPhotoRef = ref(storage, aluno.fotoStoragePath);
             try { await deleteObject(oldPhotoRef); } catch (error) { console.warn("Foto antiga não encontrada no Storage, continuando..."); }
         }
 
-        const storageRef = ref(storage, `fotos_perfil/${aluno.id}/${file.name}`);
+        // =================================================================
+        // LINHA CRÍTICA CORRIGIDA: Implementando o caminho Multi-Tenant
+        // CORRIGIDO O ERRO DE SINTAXE DE DEFINIÇÃO DA VARIÁVEL
+        // =================================================================
+        // Usa a variável 'escolaId' vinda das props
+        const storagePath = `escolas/${escolaId}/foto_aluno/${aluno.id}/${file.name}`;
+        const storageRef = ref(storage, storagePath);
+
         try {
             const snapshot = await uploadBytes(storageRef, file);
             const downloadURL = await getDownloadURL(snapshot.ref);
-            // Salva tanto o link visível quanto o caminho interno para futuras exclusões
-            onUpdateAluno({ ...aluno, foto: downloadURL, fotoStoragePath: snapshot.ref.fullPath });
+            
+            // Salva o novo link e o novo caminho de armazenamento (storagePath)
+            onUpdateAluno({ 
+                ...aluno, 
+                foto: downloadURL, 
+                fotoStoragePath: snapshot.ref.fullPath // Agora salva o caminho 'escolas/{...}/...'
+            });
+
         } catch (error) {
             console.error("Erro ao fazer upload da foto:", error);
             alert("Não foi possível carregar a foto. Tente novamente.");
@@ -4115,7 +4132,7 @@ const handleDeleteMeta = async (metaId) => {
     const escolaId = firestoreUser.escolaId;
 
     try {
-        // ... (código de preparação dos dados dataToSave continua igual) ...
+        
         const dataToSave = {
             title: eventoData.title || '',
             local: eventoData.local || '',
@@ -4375,14 +4392,43 @@ if (!currentUser) {
 }
 
   const renderView = () => {
-        if (isLoading) {
-            return <div className="flex justify-center items-center h-full"><Loader size={48} className="animate-spin text-blue-600"/></div>;
+    
+    // 1. Extração da escolaId do usuário logado (Assumindo que firestoreUser está acessível aqui)
+    const escolaId = firestoreUser?.escolaId; 
+
+    // Verificação de Segurança (Opcional, mas recomendado)
+    if (!escolaId) {
+        // Se por algum motivo o user logado não tiver escolaId, mostra loading ou erro.
+        console.error("Usuário logado sem escolaId definida.");
+        return <div className="p-4 text-red-500">Erro: Escola não identificada.</div>;
+    }
+
+    if (isLoading) {
+        return <div className="flex justify-center items-center h-full"><Loader size={48} className="animate-spin text-blue-600"/></div>;
+    }
+    
+    if (activeView === 'alunos' && selectedAluno) {
+        const currentAlunoData = alunos.find(a => a.id === selectedAluno.id);
+        
+        if (!currentAlunoData) { 
+            handleDeselectAluno(); 
+            return <GestaoAlunos userPermissions={userPermissions} alunos={alunos} turmas={turmas} onSelectAluno={handleSelectAluno} onDeleteAluno={handleDeleteAluno} onAddOrUpdateAluno={handleAddOrUpdateAluno}/>; 
         }
-        if (activeView === 'alunos' && selectedAluno) {
-             const currentAlunoData = alunos.find(a => a.id === selectedAluno.id);
-             if (!currentAlunoData) { handleDeselectAluno(); return <GestaoAlunos userPermissions={userPermissions} alunos={alunos} turmas={turmas} onSelectAluno={handleSelectAluno} onDeleteAluno={handleDeleteAluno} onAddOrUpdateAluno={handleAddOrUpdateAluno}/>; }
-             return <DetalheAluno userPermissions={userPermissions} aluno={currentAlunoData} onUpdateAluno={handleUpdateAluno} onBack={handleDeselectAluno} turmas={turmas} confirmAction={confirmAction} />;
-        }
+        
+        // 2. CRÍTICO: Injetar a escolaId no DetalheAluno
+        return (
+            <DetalheAluno 
+                userPermissions={userPermissions} 
+                aluno={currentAlunoData} 
+                onUpdateAluno={handleUpdateAluno} 
+                onBack={handleDeselectAluno} 
+                turmas={turmas} 
+                confirmAction={confirmAction}
+                // --- INJEÇÃO CORRIGIDA ---
+                escolaId={escolaId} 
+            />
+        );
+    }
         if (activeView === 'turmas' && selectedTurma) {
             const currentTurmaData = turmas.find(t => t.id === selectedTurma.id);
             if (!currentTurmaData) { handleDeselectTurma(); return <GestaoTurmas userPermissions={userPermissions} turmas={turmas} alunos={alunos} onSelectTurma={handleSelectTurma} onAddOrUpdateTurma={handleAddOrUpdateTurma} onDeleteTurma={handleDeleteTurma}/>; }
