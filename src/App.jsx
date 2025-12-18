@@ -2080,22 +2080,30 @@ const handleSendWhatsAppReminder = async (e, aluno) => {
     if (e && e.stopPropagation) e.stopPropagation();
 
     try {
-        // 1. Busca o ID do usuário logado agora mesmo
+        // 1. Busca o ID do usuário logado
         const currentUser = auth.currentUser;
         if (!currentUser) {
             alert("Erro: Você precisa estar logado.");
             return;
         }
 
-        // 2. Busca os dados desse usuário no Firestore para pegar a chave PIX
+        // 2. Busca os dados do usuário para pegar o escolaId
         const userDoc = await getDoc(doc(db, "users", currentUser.uid));
         const userData = userDoc.data();
         const pixCobranca = userData?.chavePix || "Chave PIX não cadastrada";
+        const escolaId = userData?.escolaId;
 
-        // 3. O restante da lógica permanece igual
-        const identificacaoEscola = typeof NOME_DA_ESCOLA !== 'undefined' ? NOME_DA_ESCOLA : "Administração";
+        // 3. Busca o NOME DA ESCOLA diretamente na coleção 'escolas'
+        let nomeDaEscolaFinal = "Nossa Escola"; // Nome padrão (fallback)
+        if (escolaId) {
+            const escolaDoc = await getDoc(doc(db, "escolas", escolaId));
+            if (escolaDoc.exists()) {
+                nomeDaEscolaFinal = escolaDoc.data().nome || "Nossa Escola";
+            }
+        }
+
+        // 4. Lógica de Mensagem
         const contatoPrincipal = (aluno.contatos || [])[0];
-        
         if (!contatoPrincipal?.valor) {
             alert(`O aluno ${aluno.nome} não tem um número de contato.`);
             return;
@@ -2107,10 +2115,10 @@ const handleSendWhatsAppReminder = async (e, aluno) => {
 
         if (situacao.status === 'Vencido') {
             const diasTexto = situacao.dias === 1 ? '1 dia' : `${situacao.dias} dias`;
-            mensagem = `Olá, ${nomeContato}!\n\nAqui é da ${identificacaoEscola}.\n\nA mensalidade do(a) aluno(a) ${aluno.nome} *está vencida há ${diasTexto}*.\n\nPara regularizar a situação, a nossa chave PIX é:\n${pixCobranca}\n\nObrigado!`;
+            mensagem = `Olá, ${nomeContato}!\n\nAqui é da *${nomeDaEscolaFinal}*.\n\nA mensalidade do(a) aluno(a) ${aluno.nome} *está vencida há ${diasTexto}*.\n\nPara regularizar a situação, a nossa chave PIX é:\n${pixCobranca}\n\nObrigado!`;
         } else if (situacao.status === 'A vencer') {
             const diasTexto = situacao.dias === 0 ? 'hoje' : (situacao.dias === 1 ? 'amanhã' : `em ${situacao.dias} dias`);
-            mensagem = `Olá, ${nomeContato}!\n\nAqui é da ${identificacaoEscola}.\n\nA mensalidade do(a) aluno(a) ${aluno.nome} *vence ${diasTexto}*.\n\nPara efetuar o pagamento, a nossa chave PIX é:\n${pixCobranca}\n\nObrigado!`;
+            mensagem = `Olá, ${nomeContato}!\n\nAqui é da *${nomeDaEscolaFinal}*.\n\nA mensalidade do(a) aluno(a) ${aluno.nome} *vence ${diasTexto}*.\n\nPara efetuar o pagamento, a nossa chave PIX é:\n${pixCobranca}\n\nObrigado!`;
         } else {
             return;
         }
@@ -2120,7 +2128,7 @@ const handleSendWhatsAppReminder = async (e, aluno) => {
 
     } catch (error) {
         console.error("Erro ao processar cobrança:", error);
-        alert("Erro ao buscar dados de cobrança.");
+        alert("Erro ao buscar dados da escola ou PIX.");
     }
 };
 
@@ -2258,7 +2266,7 @@ const GestaoAlunos = ({ alunos, turmas, onSelectAluno, onAddOrUpdateAluno, onDel
                                         {/* O botão agora só aparece se houver contato E a mensalidade estiver pendente */}
                                         {contatoPrincipal && (situacaoMensalidade.status === 'A vencer' || situacaoMensalidade.status === 'Vencido') && (
                                             <button
-                                                onClick={(e) => handleSendWhatsAppReminder(e, aluno)}
+                                                onClick={(e) => handleSendWhatsAppReminder(e, aluno,)}
                                                 className="ml-2 p-2 rounded-full text-green-600 hover:bg-green-100 transition-colors"
                                                 title="Enviar cobrança via WhatsApp"
                                             >
@@ -3846,7 +3854,7 @@ export default function App() {
         if (user) {
             setFirestoreLoading(true);
             const userDocRef = doc(db, "users", user.uid);
-            const unsubDoc = onSnapshot(userDocRef, async (documentoUsuario) => { // Note o async aqui
+            const unsubDoc = onSnapshot(userDocRef, async (documentoUsuario) => { 
                 if (documentoUsuario.exists()) {
                     const userData = { id: documentoUsuario.id, ...documentoUsuario.data() };
                     setFirestoreUser(userData);
@@ -3858,7 +3866,7 @@ export default function App() {
                         // Vamos usar onSnapshot para se mudar o nome, mudar na hora
                         onSnapshot(doc(db, "escolas", userData.escolaId), (docEscola) => {
                             if (docEscola.exists()) {
-                                setSchoolName(docEscola.data().nome || " Escola_Ousacs");
+                                setSchoolName(docEscola.data().nome || "");
                             }
                         });
                     }
@@ -3868,7 +3876,6 @@ export default function App() {
                 } else {
     console.log("Perfil ainda não encontrado... aguardando criação."); // Opcional: Log para debug
     setFirestoreUser(null);
-    // signOut(auth); <--- COMENTE OU APAGUE ESTA LINHA
     setAuthLoading(false);
     setFirestoreLoading(false);
 }
@@ -4870,7 +4877,7 @@ const SettingsModal = ({
 
 
     const renderContent = () => {
-        // user.logoUrl deve vir do firestoreUser, passado como prop 'user'
+        
         const currentLogoUrl = user.logoUrl; 
 
         switch (activeTab) {
