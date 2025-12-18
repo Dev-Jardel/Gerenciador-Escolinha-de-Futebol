@@ -35,7 +35,7 @@ const firebaseConfig = {
 
 // ADICIONE A SUA CHAVE PIX AQUI
 const SUA_CHAVE_PIX = "ADICIONAR CHAVE PIX"; 
-// const NOME_DA_ESCOLA =  " Administração";
+const NOME_DA_ESCOLA =  " Administração";
 
 // Inicializa o Firebase e o Firestore
 const app = initializeApp(firebaseConfig);
@@ -2076,34 +2076,52 @@ const StatusPagamentoTag = ({ situacao }) => {
 };
 
 // --- Função de Automação de Cobrança ---
-const handleSendWhatsAppReminder = (e, aluno) => {
-    e.stopPropagation(); // Impede que o clique no botão abra o perfil do aluno
+const handleSendWhatsAppReminder = async (e, aluno) => {
+    if (e && e.stopPropagation) e.stopPropagation();
 
-    const contatoPrincipal = (aluno.contatos || [])[0];
-    if (!contatoPrincipal?.valor) {
-        alert(`O aluno ${aluno.nome} não tem um número de contato principal registado.`);
-        return;
+    try {
+        // 1. Busca o ID do usuário logado agora mesmo
+        const currentUser = auth.currentUser;
+        if (!currentUser) {
+            alert("Erro: Você precisa estar logado.");
+            return;
+        }
+
+        // 2. Busca os dados desse usuário no Firestore para pegar a chave PIX
+        const userDoc = await getDoc(doc(db, "users", currentUser.uid));
+        const userData = userDoc.data();
+        const pixCobranca = userData?.chavePix || "Chave PIX não cadastrada";
+
+        // 3. O restante da lógica permanece igual
+        const identificacaoEscola = typeof NOME_DA_ESCOLA !== 'undefined' ? NOME_DA_ESCOLA : "Administração";
+        const contatoPrincipal = (aluno.contatos || [])[0];
+        
+        if (!contatoPrincipal?.valor) {
+            alert(`O aluno ${aluno.nome} não tem um número de contato.`);
+            return;
+        }
+        
+        const situacao = getSituacaoMensalidade(aluno);
+        const nomeContato = contatoPrincipal.nome || "Responsável";
+        let mensagem = '';
+
+        if (situacao.status === 'Vencido') {
+            const diasTexto = situacao.dias === 1 ? '1 dia' : `${situacao.dias} dias`;
+            mensagem = `Olá, ${nomeContato}!\n\nAqui é da ${identificacaoEscola}.\n\nA mensalidade do(a) aluno(a) ${aluno.nome} *está vencida há ${diasTexto}*.\n\nPara regularizar a situação, a nossa chave PIX é:\n${pixCobranca}\n\nObrigado!`;
+        } else if (situacao.status === 'A vencer') {
+            const diasTexto = situacao.dias === 0 ? 'hoje' : (situacao.dias === 1 ? 'amanhã' : `em ${situacao.dias} dias`);
+            mensagem = `Olá, ${nomeContato}!\n\nAqui é da ${identificacaoEscola}.\n\nA mensalidade do(a) aluno(a) ${aluno.nome} *vence ${diasTexto}*.\n\nPara efetuar o pagamento, a nossa chave PIX é:\n${pixCobranca}\n\nObrigado!`;
+        } else {
+            return;
+        }
+
+        const telefoneLimpo = contatoPrincipal.valor.replace(/\D/g, '');
+        window.open(`https://wa.me/55${telefoneLimpo}?text=${encodeURIComponent(mensagem)}`, '_blank');
+
+    } catch (error) {
+        console.error("Erro ao processar cobrança:", error);
+        alert("Erro ao buscar dados de cobrança.");
     }
-
-    const situacao = getSituacaoMensalidade(aluno);
-    let mensagem = '';
-    const nomeContato = contatoPrincipal.nome || "Responsável";
-
-    if (situacao.status === 'Vencido') {
-        const diasTexto = situacao.dias === 1 ? '1 dia' : `${situacao.dias} dias`;
-        mensagem = `Olá, ${nomeContato}!\n\nAqui é da ${NOME_DA_ESCOLA}.\n\nA mensalidade do(a) aluno(a) ${aluno.nome} *está vencida há ${diasTexto}*.\n\nPara regularizar a situação, a nossa chave PIX é:\n${SUA_CHAVE_PIX}\n\nObrigado!`;
-    } else if (situacao.status === 'A vencer') {
-        const diasTexto = situacao.dias === 0 ? 'hoje' : (situacao.dias === 1 ? 'amanhã' : `em ${situacao.dias} dias`);
-        mensagem = `Olá, ${nomeContato}!\n\nAqui é da ${NOME_DA_ESCOLA}.\n\nA mensalidade do(a) aluno(a) ${aluno.nome} *vence ${diasTexto}*.\n\nPara efetuar o pagamento, a nossa chave PIX é:\n${SUA_CHAVE_PIX}\n\nObrigado!`;
-    } else {
-        return; // Não faz nada se o pagamento estiver em dia
-    }
-
-    // Limpa o número de telefone e cria o link
-    const telefoneLimpo = contatoPrincipal.valor.replace(/\D/g, '');
-    const linkWhatsApp = `https://wa.me/55${telefoneLimpo}?text=${encodeURIComponent(mensagem)}`;
-    
-    window.open(linkWhatsApp, '_blank');
 };
 
 const GestaoAlunos = ({ alunos, turmas, onSelectAluno, onAddOrUpdateAluno, onDeleteAlunos, userPermissions, onOpenBulkUpdate }) => {
@@ -2196,7 +2214,7 @@ const GestaoAlunos = ({ alunos, turmas, onSelectAluno, onAddOrUpdateAluno, onDel
                 <div className="overflow-x-auto">
                     <table className="w-full">
                         <thead className="bg-gray-50">
-                            {/* ... seu thead ... */}
+                        
                              <tr>
                                 {userPermissions.canDelete && ( <th className="p-4 w-12 text-center"> <input type="checkbox" className="h-4 w-4 rounded text-blue-600" onChange={handleSelectAll} checked={filteredAndSortedAlunos.length > 0 && selectedAlunos.length === filteredAndSortedAlunos.length} /> </th> )}
                                 <th className="p-4 text-left text-sm font-semibold text-gray-600">Nome</th>
@@ -2207,32 +2225,47 @@ const GestaoAlunos = ({ alunos, turmas, onSelectAluno, onAddOrUpdateAluno, onDel
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-200">
-                           {/* ... seu tbody com o map ... */}
+                           
                            {filteredAndSortedAlunos.map(aluno => { 
                                 const contatoPrincipal = (aluno.contatos || [])[0]; 
                                 const situacaoMensalidade = getSituacaoMensalidade(aluno); 
                                 return ( 
                                     <tr key={aluno.id} onClick={() => onSelectAluno(aluno)} className="hover:bg-gray-50 cursor-pointer"> 
-                                        {userPermissions.canDelete && ( <td className="p-4 text-center"> <input type="checkbox" className="h-4 w-4 rounded text-blue-600" checked={selectedAlunos.includes(aluno.id)} onClick={(e) => e.stopPropagation()} onChange={(e) => handleSelectOne(e, aluno.id)} /> </td> )} 
+                                                        {userPermissions.canDelete && ( <td className="p-4 text-center"> <input type="checkbox" className="h-4 w-4 rounded text-blue-600" checked={selectedAlunos.includes(aluno.id)} onClick={(e) => e.stopPropagation()} onChange={(e) => handleSelectOne(e, aluno.id)} /> </td> )} 
                                         <td className="p-4 whitespace-nowrap"> <div className="flex items-center"> <div className="w-10 h-10 rounded-full bg-gray-200 flex items-center justify-center mr-4 flex-shrink-0"> {aluno.foto ? <img src={aluno.foto} alt={aluno.nome} className="w-full h-full rounded-full object-cover" /> : <User className="text-gray-500" />} </div> <span className="font-medium text-gray-900">{aluno.nome}</span> </div> </td> 
                                         <td className="p-4 whitespace-nowrap text-center"> <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${aluno.status === 'Ativo' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}> {aluno.status} </span> </td> 
                                         <td className="p-4 whitespace-nowrap text-center"> <StatusPagamentoTag situacao={situacaoMensalidade} /> </td> 
                                         <td className="p-4 whitespace-nowrap text-sm text-gray-600 hidden sm:table-cell"> {(aluno.turmaIds || []).map(id => (turmas || []).find(t => t.id === id)?.nome).filter(Boolean).join(', ')} </td> 
                                         <td className="p-4 whitespace-nowrap text-sm hidden md:table-cell"> 
+
                                             <div className="flex items-center justify-between">
-                                                {contatoPrincipal ? ( 
-                                                    <div> 
-                                                        <p className="font-medium text-gray-900">{contatoPrincipal.nome} {contatoPrincipal.parentesco && <span className="text-gray-500 font-normal">({contatoPrincipal.parentesco})</span>}</p>
-                                                        <p className="text-gray-500">{contatoPrincipal.valor}</p>
-                                                    </div> 
-                                                ) : ( 'N/A' )} 
-                                                {(situacaoMensalidade.status === 'A vencer' || situacaoMensalidade.status === 'Vencido') && (
-                                                    <button onClick={(e) => handleSendWhatsAppReminder(e, aluno)} className="p-2 rounded-full text-green-600 hover:bg-green-100">
-              _``` 
-<Send  size={20} />
-                                                    </button>
-                                                )}
-                                            </div>
+                                        {contatoPrincipal ? (
+                                            <div className="flex-1">
+                                                <p className="font-medium text-gray-900">
+                                                    {contatoPrincipal.nome} 
+                                                    {contatoPrincipal.parentesco && (
+                                                        <span className="text-gray-500 font-normal ml-1">
+                                                            ({contatoPrincipal.parentesco})
+                                                        </span>
+                                                    )}
+                                                </p>
+                                                <p className="text-gray-500">{contatoPrincipal.valor}</p>
+                                            </div>
+                                        ) : (
+                                            <span className="text-gray-400">N/A</span>
+                                        )}
+
+                                        {/* O botão agora só aparece se houver contato E a mensalidade estiver pendente */}
+                                        {contatoPrincipal && (situacaoMensalidade.status === 'A vencer' || situacaoMensalidade.status === 'Vencido') && (
+                                            <button
+                                                onClick={(e) => handleSendWhatsAppReminder(e, aluno)}
+                                                className="ml-2 p-2 rounded-full text-green-600 hover:bg-green-100 transition-colors"
+                                                title="Enviar cobrança via WhatsApp"
+                                            >
+                                                <Send size={20} />
+                                            </button>
+                                        )}
+                                    </div>
                                         </td> 
                                     </tr> 
                                 ) 
@@ -3401,7 +3434,7 @@ const HistoricoPresencaAluno = ({ aluno, turmas }) => {
     );
 };
 
-const DetalheAluno = ({ aluno, onUpdateAluno, onBack, turmas, confirmAction, escolaId, triggerUndo, isModal = false, onClose = () => {} }) => {
+const DetalheAluno = ({ aluno, onUpdateAluno, onBack, turmas, confirmAction, escolaId, nomeEscola, triggerUndo, isModal = false, onClose = () => {} }) => {
     const [isAvaliacaoModalOpen, setAvaliacaoModalOpen] = React.useState(false);
     const [editingAvaliacao, setEditingAvaliacao] = React.useState(null);
     const [isPagamentoModalOpen, setPagamentoModalOpen] = React.useState(false);
@@ -3428,20 +3461,13 @@ const handleFotoChange = async (e) => {
         if (!file) return;
         setIsUploadingFoto(true);
 
-        // 1. Obter o ID da Escola
-        // REMOVIDO: const escolaId = firestoreUser.escolaId; 
-        // USANDO: escolaId que veio diretamente das props!
-
         // 2. Se já existe uma foto, apaga a antiga do Storage primeiro
         if (aluno.fotoStoragePath) {
             const oldPhotoRef = ref(storage, aluno.fotoStoragePath);
             try { await deleteObject(oldPhotoRef); } catch (error) { console.warn("Foto antiga não encontrada no Storage, continuando..."); }
         }
 
-        // =================================================================
-        // LINHA CRÍTICA CORRIGIDA: Implementando o caminho Multi-Tenant
-        // CORRIGIDO O ERRO DE SINTAXE DE DEFINIÇÃO DA VARIÁVEL
-        // =================================================================
+
         // Usa a variável 'escolaId' vinda das props
         const storagePath = `escolas/${escolaId}/foto_aluno/${aluno.id}/${file.name}`;
         const storageRef = ref(storage, storagePath);
@@ -4393,7 +4419,6 @@ if (!currentUser) {
 
   const renderView = () => {
     
-    // 1. Extração da escolaId do usuário logado (Assumindo que firestoreUser está acessível aqui)
     const escolaId = firestoreUser?.escolaId; 
 
     // Verificação de Segurança (Opcional, mas recomendado)
@@ -4424,8 +4449,8 @@ if (!currentUser) {
                 onBack={handleDeselectAluno} 
                 turmas={turmas} 
                 confirmAction={confirmAction}
-                // --- INJEÇÃO CORRIGIDA ---
-                escolaId={escolaId} 
+                escolaId={firestoreUser.escolaId} 
+                nomeEscola={firestoreUser.nomeEscola || firestoreUser.escolaNome || "Nossa Escola"} // Fallback caso não encontre
             />
         );
     }
@@ -4639,7 +4664,7 @@ const ProfileSettings = ({ user, onPhotoUpload, isLoading, onUpdateProfile, onRe
             </div>
         </div>
     );
-}; // <--- FECHAMENTO CORRETO
+};
 
 const SchoolLogoUploadCard = ({ currentLogoUrl, onUpload, isLoading, escolaId, confirmAction }) => {
     const [selectedFile, setSelectedFile] = useState(null);
@@ -4700,13 +4725,16 @@ const SchoolLogoUploadCard = ({ currentLogoUrl, onUpload, isLoading, escolaId, c
             </div>
         </div>
     );
-}; // <--- FECHAMENTO CORRETO
+}; 
 
 
-// Adapte o FinancialSettings para ter o fecho correto
-const FinancialSettings = ({ onApplyToAll, confirmAction }) => {
+const FinancialSettings = ({ onApplyToAll, confirmAction, firestoreUser }) => {
     const [valorEmMassa, setValorEmMassa] = useState('');
     const [overrideAll, setOverrideAll] = useState(false);
+    
+    // Novo estado para a Chave PIX, iniciando com o que já existe no banco
+    const [chavePix, setChavePix] = useState(firestoreUser?.chavePix || '');
+    const [salvandoPix, setSalvandoPix] = useState(false);
 
     const handleApplyClick = () => {
         if (!valorEmMassa || Number(valorEmMassa) <= 0) {
@@ -4719,40 +4747,105 @@ const FinancialSettings = ({ onApplyToAll, confirmAction }) => {
         );
     };
 
+    // Função para salvar a Chave PIX no Firestore
+    const handleSavePix = async () => {
+        if (!firestoreUser?.uid) {
+            alert("Erro: Usuário não identificado.");
+            return;
+        }
+
+        setSalvandoPix(true);
+        try {
+            // Ajuste "users" para "escolas" se os dados da sua escola ficarem em outra coleção
+            const userRef = doc(db, "users", firestoreUser.uid); 
+            await updateDoc(userRef, {
+                chavePix: chavePix
+            });
+            alert("Chave PIX salva com sucesso!");
+        } catch (error) {
+            console.error("Erro ao salvar PIX:", error);
+            alert("Erro ao salvar a chave PIX.");
+        } finally {
+            setSalvandoPix(false);
+        }
+    };
+
     return (
-        <div>
-            <h3 className="text-xl font-bold text-gray-800 mb-4">Financeiro - Ações em Massa</h3>
-            <div className="bg-gray-50 p-6 rounded-lg space-y-4">
-                <div>
-                    <label htmlFor="bulk-fee" className="block text-sm font-medium text-gray-700">Definir valor da mensalidade para os alunos</label>
-                    <input 
-                        type="number" 
-                        id="bulk-fee"
-                        value={valorEmMassa}
-                        onChange={(e) => setValorEmMassa(e.target.value)}
-                        className="mt-1 block w-full border-gray-300 rounded-md shadow-sm"
-                        placeholder="150.00"
-                    />
-                </div>
-                <div className="mt-2 flex items-center">
-                    <input
-                        id="override-all-checkbox"
-                        type="checkbox"
-                        checked={overrideAll}
-                        onChange={(e) => setOverrideAll(e.target.checked)}
-                        className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                    />
-                    <label htmlFor="override-all-checkbox" className="ml-2 block text-sm text-gray-700">
-                        Sobrescrever valores personalizados existentes
+        <div className="space-y-8">
+            {/* --- SEÇÃO DE CONFIGURAÇÕES GERAIS --- */}
+            <div>
+                <h3 className="text-xl font-bold text-gray-800 mb-4">Dados de Recebimento</h3>
+                <div className="bg-green-50 p-6 rounded-lg border border-green-100">
+                    <label htmlFor="pix-key" className="block text-sm font-medium text-green-800">
+                        Chave PIX para Cobrança (WhatsApp)
                     </label>
+                    <div className="mt-1 flex gap-2">
+                        <input 
+                            type="text" 
+                            id="pix-key"
+                            value={chavePix}
+                            onChange={(e) => setChavePix(e.target.value)}
+                            className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-green-500 focus:border-green-500"
+                            placeholder="Ex: seu@email.com ou CNPJ"
+                        />
+                        <button 
+                            onClick={handleSavePix}
+                            disabled={salvandoPix}
+                            className="bg-green-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-green-700 disabled:bg-gray-400 transition-colors"
+                        >
+                            {salvandoPix ? '...' : 'Salvar'}
+                        </button>
+                    </div>
+                    <p className="mt-2 text-xs text-green-700 italic">
+                        * Esta chave será enviada automaticamente nas mensagens de cobrança.
+                    </p>
                 </div>
-                <div className="flex justify-end">
-                    <button onClick={handleApplyClick} className="bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700">Aplicar a Alunos</button>
+            </div>
+
+            <hr className="border-gray-200" />
+
+            {/* --- SEÇÃO DE AÇÕES EM MASSA --- */}
+            <div>
+                <h3 className="text-xl font-bold text-gray-800 mb-4">Financeiro - Ações em Massa</h3>
+                <div className="bg-gray-50 p-6 rounded-lg space-y-4 border border-gray-200">
+                    <div>
+                        <label htmlFor="bulk-fee" className="block text-sm font-medium text-gray-700">
+                            Definir valor da mensalidade para os alunos
+                        </label>
+                        <input 
+                            type="number" 
+                            id="bulk-fee"
+                            value={valorEmMassa}
+                            onChange={(e) => setValorEmMassa(e.target.value)}
+                            className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                            placeholder="150.00"
+                        />
+                    </div>
+                    <div className="mt-2 flex items-center">
+                        <input
+                            id="override-all-checkbox"
+                            type="checkbox"
+                            checked={overrideAll}
+                            onChange={(e) => setOverrideAll(e.target.checked)}
+                            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                        />
+                        <label htmlFor="override-all-checkbox" className="ml-2 block text-sm text-gray-700">
+                            Sobrescrever valores personalizados existentes
+                        </label>
+                    </div>
+                    <div className="flex justify-end">
+                        <button 
+                            onClick={handleApplyClick} 
+                            className="bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+                        >
+                            Aplicar a todos os Alunos
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
     );
-}; // <--- FECHAMENTO CORRETO
+};
 
 const SettingsModal = ({ 
     user, allUsers, onUpdateUserStatus, onUpdateUserRole, onClose, isAdmin, onLogout, 
@@ -4774,7 +4867,7 @@ const SettingsModal = ({
             setTimeout(() => setInviteCopied(false), 2000);
         }
     };
-    // --------------------------------------------------
+
 
     const renderContent = () => {
         // user.logoUrl deve vir do firestoreUser, passado como prop 'user'
@@ -4846,18 +4939,17 @@ const SettingsModal = ({
                     </div>
                 );
 
-            case 'financeiro':
-                return <FinancialSettings configs={configs} onUpdate={onUpdateConfigs} onApplyToAll={onApplyDefaultFee} confirmAction={confirmAction} />;
-                
-            default:
-                // Fallback para Perfil se a aba não for reconhecida
-                return <ProfileSettings 
-                    user={user} 
-                    onPhotoUpload={onPhotoUpload} 
-                    isLoading={isLoading}
-                    onUpdateProfile={onUpdateProfile} 
-                    onResetPassword={onResetPassword} 
-                />;
+           case 'financeiro':
+                return (
+                    <FinancialSettings 
+                        configs={configs} 
+                        onUpdate={onUpdateConfigs} 
+                        onApplyToAll={onApplyDefaultFee} 
+                        confirmAction={confirmAction}
+                        // ADICIONE ESTA LINHA ABAIXO:
+                        firestoreUser={user} 
+                    />
+                );
         }
     };
 
